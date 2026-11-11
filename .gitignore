@@ -1,0 +1,24 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+backend/test_wallet.db
+
+# Node
+node_modules/
+frontend/dist/
+
+# Exports bancaires : ne jamais les versionner
+imports/
+*.csv
+*.ofx
+*.qif
+
+# Divers
+.DS_Store
+Thumbs.db
+.vscode/
