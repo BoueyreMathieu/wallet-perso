@@ -22,3 +22,6 @@ imports/
 .DS_Store
 Thumbs.db
 .vscode/
+
+# Logs
+*.log
