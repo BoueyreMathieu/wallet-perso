@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import { api } from "../api";
+import { ApiError, api } from "../api";
 
 export default function Login({ onLogin }: { onLogin: () => void }) {
   const [password, setPassword] = useState("");
@@ -13,8 +13,13 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
     try {
       await api.post("/auth/login", { password });
       onLogin();
-    } catch {
-      setError("Mot de passe incorrect");
+    } catch (err) {
+      const status = err instanceof ApiError ? err.status : 0;
+      setError(
+        status === 401
+          ? "Mot de passe incorrect"
+          : `Le serveur ne répond pas correctement (erreur ${status || "réseau"}). Regarde « docker compose logs api ».`,
+      );
     } finally {
       setBusy(false);
     }
