@@ -32,6 +32,10 @@ export default function Accounts() {
         />
       )}
 
+      <p className="text-xs text-slate-500">
+        Solde affiché = dernier solde connu (import bancaire ou mise à jour à la main) + opérations datées après.
+      </p>
+
       {accounts.length === 0 && !showForm && (
         <p className="card text-sm text-slate-500">Aucun compte. Commence par ton compte courant Crédit Agricole.</p>
       )}

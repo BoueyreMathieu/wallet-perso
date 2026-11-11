@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +21,12 @@ class Settings(BaseSettings):
     session_max_age_days: int = 30
     # Mettre à true quand l'appli est servie en HTTPS.
     cookie_secure: bool = False
+
+    @field_validator("app_password", "secret_key", "encryption_key", "database_url", mode="before")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        # Un .env aux fins de ligne Windows peut laisser un "\r" invisible en fin de valeur.
+        return v.strip() if isinstance(v, str) else v
 
 
 @lru_cache

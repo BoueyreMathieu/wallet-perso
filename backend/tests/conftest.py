@@ -32,6 +32,41 @@ def database():
     get_engine().dispose()
 
 
+# Tables vidées après chaque test (ordre compatible avec les clés étrangères).
+# Les catégories et règles par défaut sont conservées.
+_USER_TABLES = (
+    "DELETE FROM transaction_tag",
+    "DELETE FROM merchant_tag",
+    "DELETE FROM rule_tag",
+    "DELETE FROM tag",
+    'DELETE FROM "transaction"',
+    "DELETE FROM import_batch",
+    "DELETE FROM rule WHERE from_correction",
+    "DELETE FROM recurring_series",
+    "DELETE FROM budget",
+    "DELETE FROM merchant",
+    "DELETE FROM balance_snapshot",
+    "DELETE FROM holding",
+    "DELETE FROM goal",
+    "DELETE FROM account",
+    "DELETE FROM connection",
+    "DELETE FROM app_meta WHERE key = 'owner_signatures'",
+)
+
+
+@pytest.fixture(autouse=True)
+def clean_tables(database):
+    """Chaque test démarre avec une base sans comptes ni opérations."""
+    yield
+    from sqlalchemy import text
+
+    from app.db import get_engine
+
+    with get_engine().begin() as conn:
+        for stmt in _USER_TABLES:
+            conn.execute(text(stmt))
+
+
 @pytest.fixture
 def client():
     from fastapi.testclient import TestClient

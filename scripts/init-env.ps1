@@ -44,7 +44,8 @@ $lines = @(
     "POSTGRES_PASSWORD=$(New-Hex 24)",
     "COOKIE_SECURE=false"
 )
-[IO.File]::WriteAllLines($envPath, $lines)
+# Fins de ligne Unix (LF) : un "\r" final pourrait se retrouver dans les valeurs.
+[IO.File]::WriteAllText($envPath, ($lines -join "`n") + "`n")
 
 Write-Host ".env cree." -ForegroundColor Green
 Write-Host "IMPORTANT : sauvegarde ENCRYPTION_KEY en lieu sur (gestionnaire de mots de passe)." -ForegroundColor Yellow

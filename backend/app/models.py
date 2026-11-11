@@ -20,9 +20,12 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    Column,
     String,
+    Table,
     Text,
     UniqueConstraint,
+    true,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -32,6 +35,27 @@ ACCOUNT_TYPES = ("courant", "epargne", "investissement", "paypal", "especes", "c
 PROVIDERS = ("manuel", "csv", "enable_banking", "paypal", "pytr")
 CATEGORY_KINDS = ("depense", "revenu", "transfert")
 FREQUENCIES = ("hebdomadaire", "mensuelle", "trimestrielle", "annuelle")
+
+
+# Étiquettes : liens manuels (opération), et liens hérités (vendeur, service).
+transaction_tag = Table(
+    "transaction_tag",
+    Base.metadata,
+    Column("transaction_id", ForeignKey("transaction.id", ondelete="CASCADE"), primary_key=True),
+    Column("tag_id", ForeignKey("tag.id", ondelete="CASCADE"), primary_key=True),
+)
+merchant_tag = Table(
+    "merchant_tag",
+    Base.metadata,
+    Column("merchant_id", ForeignKey("merchant.id", ondelete="CASCADE"), primary_key=True),
+    Column("tag_id", ForeignKey("tag.id", ondelete="CASCADE"), primary_key=True),
+)
+rule_tag = Table(
+    "rule_tag",
+    Base.metadata,
+    Column("rule_id", ForeignKey("rule.id", ondelete="CASCADE"), primary_key=True),
+    Column("tag_id", ForeignKey("tag.id", ondelete="CASCADE"), primary_key=True),
+)
 
 
 def utcnow() -> datetime:
@@ -87,6 +111,8 @@ class BalanceSnapshot(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("account.id", ondelete="CASCADE"))
     date: Mapped[dt.date] = mapped_column(Date)
     balance_cents: Mapped[int] = mapped_column(BigInteger)
+    # Moment où ce solde a été enregistré : les saisies manuelles faites après, à la même date, s'y ajoutent.
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     account: Mapped[Account] = relationship(back_populates="balances")
 
@@ -128,6 +154,8 @@ class Merchant(Base):
     name: Mapped[str] = mapped_column(String(150), unique=True)
     aliases: Mapped[list | None] = mapped_column(JSON)
     default_category_id: Mapped[int | None] = mapped_column(ForeignKey("category.id", ondelete="SET NULL"))
+
+    tags: Mapped[list["Tag"]] = relationship(secondary=merchant_tag)
 
 
 class RecurringSeries(Base):
@@ -172,7 +200,23 @@ class Transaction(Base):
     note: Mapped[str | None] = mapped_column(Text)
     # True si l'utilisateur a choisi la catégorie à la main (les règles ne l'écrasent plus).
     category_locked: Mapped[bool] = mapped_column(Boolean, default=False)
+    # False : visible mais exclue des statistiques (doublon d'une opération rapprochée, approvisionnement…).
+    counted: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    # Opération jumelle sur un autre compte (ex. prélèvement CA ↔ achat PayPal correspondant).
+    linked_id: Mapped[int | None] = mapped_column(
+        ForeignKey("transaction.id", ondelete="SET NULL", name="fk_transaction_linked")
+    )
+    # Infos d'origine (vendeur, objet, n° de transaction…). Jamais d'adresse, de téléphone ni d'e-mail.
+    details: Mapped[dict | None] = mapped_column(JSON)
+    status: Mapped[str | None] = mapped_column(String(20))
+    # Règle (ou service) qui a donné la catégorie : sert aux étiquettes héritées et aux répartitions.
+    rule_id: Mapped[int | None] = mapped_column(ForeignKey("rule.id", ondelete="SET NULL", name="fk_transaction_rule"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    account: Mapped[Account] = relationship()
+    merchant: Mapped["Merchant | None"] = relationship()
+    category: Mapped["Category | None"] = relationship()
+    tags: Mapped[list["Tag"]] = relationship(secondary=transaction_tag)  # étiquettes posées à la main
 
 
 class Rule(Base):
@@ -184,10 +228,17 @@ class Rule(Base):
     pattern: Mapped[str] = mapped_column(String(255))
     match_type: Mapped[str] = mapped_column(String(20), default="contient")  # contient | regex | exact
     category_id: Mapped[int | None] = mapped_column(ForeignKey("category.id", ondelete="CASCADE"))
+    # Renseigné = « service » : la règle ne s'applique qu'aux opérations de ce vendeur.
     merchant_id: Mapped[int | None] = mapped_column(ForeignKey("merchant.id", ondelete="CASCADE"))
     priority: Mapped[int] = mapped_column(Integer, default=100)
     from_correction: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    label: Mapped[str | None] = mapped_column(String(100))  # nom du service (« Assurance habitation »)
+    # Montant (valeur absolue, en centimes) : condition optionnelle d'un service.
+    amount_min_cents: Mapped[int | None] = mapped_column(BigInteger)
+    amount_max_cents: Mapped[int | None] = mapped_column(BigInteger)
+
+    tags: Mapped[list["Tag"]] = relationship(secondary=rule_tag)
 
 
 class Budget(Base):
@@ -233,3 +284,22 @@ class PriceSnapshot(Base):
     isin: Mapped[str] = mapped_column(String(12))
     date: Mapped[dt.date] = mapped_column(Date)
     price: Mapped[Decimal] = mapped_column(Numeric(20, 6))
+
+
+class AppMeta(Base):
+    """Petites valeurs de configuration internes (versions des données par défaut, etc.)."""
+
+    __tablename__ = "app_meta"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+
+
+class Tag(Base):
+    """Étiquette transversale (« Assurances », « Vacances 2026 »…). N'influence pas les totaux par catégorie."""
+
+    __tablename__ = "tag"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(50), unique=True)
+    color: Mapped[str | None] = mapped_column(String(7))

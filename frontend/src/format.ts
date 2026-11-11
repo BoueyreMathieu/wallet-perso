@@ -22,3 +22,41 @@ export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
   credit: "Crédit",
   bien: "Bien (immobilier, véhicule…)",
 };
+
+/** Date locale au format AAAA-MM-JJ (sans décalage de fuseau). */
+export function isoDate(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+export type PeriodKey = "month" | "last_month" | "3m" | "year" | "12m" | "all" | "custom";
+
+export const PERIODS: { key: PeriodKey; label: string }[] = [
+  { key: "month", label: "Ce mois-ci" },
+  { key: "last_month", label: "Mois dernier" },
+  { key: "3m", label: "3 derniers mois" },
+  { key: "year", label: "Cette année" },
+  { key: "12m", label: "12 derniers mois" },
+  { key: "all", label: "Depuis le début" },
+  { key: "custom", label: "Personnalisée…" },
+];
+
+/** Bornes [début, fin] d'une période prédéfinie (null = pas de borne). */
+export function periodRange(key: PeriodKey, today = new Date()): [string | null, string | null] {
+  const y = today.getFullYear();
+  const m = today.getMonth();
+  switch (key) {
+    case "month":
+      return [isoDate(new Date(y, m, 1)), isoDate(today)];
+    case "last_month":
+      return [isoDate(new Date(y, m - 1, 1)), isoDate(new Date(y, m, 0))];
+    case "3m":
+      return [isoDate(new Date(y, m - 2, 1)), isoDate(today)];
+    case "year":
+      return [isoDate(new Date(y, 0, 1)), isoDate(today)];
+    case "12m":
+      return [isoDate(new Date(y - 1, m, today.getDate() + 1)), isoDate(today)];
+    default:
+      return [null, null];
+  }
+}
