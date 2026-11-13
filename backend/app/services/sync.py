@@ -3,6 +3,7 @@
 import hmac
 import logging
 import secrets as pysecrets
+import threading
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -229,22 +230,65 @@ def sync_connection(db: Session, c: Connection, client: eb.EnableBankingClient |
         results.append(ingest(db, stmt, acc.id, None, c.label))
     c.last_sync_at = datetime.now(timezone.utc)
     c.status = "actif"
+    c.last_error = None
+    c.last_error_at = None
     db.commit()
     return results
 
 
+def record_error(db: Session, connection_id: int, e: Exception) -> None:
+    """Garde la dernière erreur (affichée dans Connexions) ; autorisation refusée : la connexion passe « en erreur »."""
+    c = db.get(Connection, connection_id)
+    if c is None:
+        return
+    if isinstance(e, eb.EnableBankingError) and e.status == 429:
+        c.last_error = "La banque limite le nombre de synchros par jour : nouvel essai plus tard."
+    else:
+        c.last_error = str(e)[:300] or e.__class__.__name__
+    c.last_error_at = datetime.now(timezone.utc)
+    if isinstance(e, eb.EnableBankingError) and e.status in (401, 403):
+        c.status = "erreur"
+    db.commit()
+
+
+def _aware(d: datetime | None) -> datetime | None:
+    return d.replace(tzinfo=timezone.utc) if d is not None and d.tzinfo is None else d
+
+
+# Une seule synchro à la fois (boucle automatique, ouverture de l'appli, bouton).
+_RUNNING = threading.Lock()
+
+
+def sync_stale(db: Session, max_age: timedelta) -> dict:
+    """Synchronise les connexions actives dont la dernière synchro date de plus de `max_age`, sans s'arrêter sur une
+    erreur. Les banques limitent souvent les synchros sans l'utilisateur (souvent 4 par jour et par compte)."""
+    if not _RUNNING.acquire(blocking=False):
+        return {"running": True, "synced": [], "imported": 0, "errors": []}
+    try:
+        now = datetime.now(timezone.utc)
+        out = {"running": False, "synced": [], "imported": 0, "errors": []}
+        for c in db.scalars(select(Connection).where(Connection.provider == PROVIDER, Connection.status == "actif")).all():
+            last = _aware(c.last_sync_at)
+            if last is not None and now - last < max_age:
+                continue
+            cid, label = c.id, c.label
+            try:
+                results = sync_connection(db, c)
+                out["synced"].append(label)
+                out["imported"] += sum(r.imported for r in results)
+            except Exception as e:  # noqa: BLE001 - on note l'erreur et on passe à la suivante
+                db.rollback()
+                log.warning("Synchro %s impossible : %s", label, e)
+                record_error(db, cid, e)
+                out["errors"].append({"label": label, "error": db.get(Connection, cid).last_error if db.get(Connection, cid) else str(e)})
+        return out
+    finally:
+        _RUNNING.release()
+
+
 def sync_all(db: Session) -> None:
-    """Synchro planifiée : chaque connexion active, sans s'arrêter sur une erreur."""
-    for c in db.scalars(select(Connection).where(Connection.provider == PROVIDER, Connection.status == "actif")).all():
-        try:
-            sync_connection(db, c)
-        except Exception as e:  # noqa: BLE001 - on journalise et on passe à la suivante
-            db.rollback()
-            log.warning("Synchro %s impossible : %s", c.label, e)
-            c = db.get(Connection, c.id)
-            if c is not None and isinstance(e, eb.EnableBankingError) and e.status in (401, 403):
-                c.status = "erreur"
-                db.commit()
+    """Toutes les connexions actives, quelle que soit la date de leur dernière synchro."""
+    sync_stale(db, timedelta(0))
 
 
 def disconnect(db: Session, c: Connection) -> None:

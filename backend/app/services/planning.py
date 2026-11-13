@@ -22,12 +22,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.layers import NATURES, effective_natures
-from app.models import Account, Budget, Category, PendingTransaction, RecurringSeries, Transaction
+from app.models import Account, Budget, Category, Merchant, PendingTransaction, RecurringSeries, Transaction
 from app.recurrence import FREQUENCIES, monthly_cost, occurrences
-from app.seed import resolve_paths
+from app.seed import get_meta, resolve_paths
 from app.services.balances import current_balance
 from app.services.recurring import ACTIVE_STATUSES
-from app.trends import MAX_MONTHS, Profile, apply_caps, direction, expected_between, learn_profile, weighted_level
+from app.trends import (
+    HABIT_WINDOW_DAYS, MAX_MONTHS, Habit, Occasional, Profile, apply_caps, band, classify, direction, learn_habit, learn_profile,
+    rest_of_month, trend_level, unit_expected, weighted_level,
+)
 
 # Comptes pris par défaut pour la trésorerie : l'argent disponible au quotidien.
 LIQUID_TYPES = ("courant", "paypal")
@@ -93,6 +96,9 @@ class Unit:
     monthly: int
     direction: str
     history: list[int]
+    lo: float = 0.85  # mois « bon » / niveau (prévision optimiste)
+    hi: float = 1.15  # mois « mauvais » / niveau (prévision prudente)
+    occasional: Occasional | None = None  # de temps en temps : un montant d'un coup à la prochaine date attendue
 
 
 @dataclass
@@ -103,6 +109,8 @@ class Model:
     other_income_direction: str = "stable"
     other_income_day: int = 28  # jour du mois où ils sont arrivés pour 80 % (au plus tard)
     months_used: int = 0
+    habits: dict[int | None, list[Habit]] = field(default_factory=dict)  # vendeurs habituels, par catégorie
+    spent_month: dict[int | None, int] = field(default_factory=dict)  # déjà dépensé ce mois-ci (hors récurrents), par catégorie
 
 
 def build_model(db: Session, today: date, account_ids: list[int] | None) -> Model:
@@ -129,13 +137,18 @@ def build_model(db: Session, today: date, account_ids: list[int] | None) -> Mode
     per_unit: dict[int | None, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     income: dict[str, int] = defaultdict(int)
     daily: dict[str, list[tuple[date, int]]] = defaultdict(list)
+    visits: dict[int | None, list[tuple[date, int]]] = defaultdict(list)  # achats datés (mois en cours compris)
     q = select(Transaction.booked_at, Transaction.amount_cents, Transaction.category_id).where(
-        Transaction.booked_at >= months[0], Transaction.booked_at <= last,
+        Transaction.booked_at >= months[0], Transaction.booked_at <= today,
         Transaction.counted.is_(True), Transaction.is_transfer.is_(False), Transaction.recurring_id.is_(None),
     )
     if account_ids:
         q = q.where(Transaction.account_id.in_(account_ids))
     for r in db.execute(q).all():
+        if r.amount_cents < 0:
+            visits[r.category_id].append((r.booked_at, -r.amount_cents))
+        if r.booked_at > last:
+            continue  # mois en cours : seulement pour les dates d'achat (les tendances portent sur des mois complets)
         k = r.booked_at.strftime("%Y-%m")
         if r.amount_cents > 0:
             income[k] += r.amount_cents
@@ -144,13 +157,31 @@ def build_model(db: Session, today: date, account_ids: list[int] | None) -> Mode
             per_unit[r.category_id][k] -= r.amount_cents
             daily[layer_of(r.category_id, None, natures)].append((r.booked_at, -r.amount_cents))
 
+    # Catégories « fixes » déjà couvertes par un récurrent (loyer, énergie…) : leur reste n'est pas une charge de plus
+    # (sinon doublon : l'échéance du récurrent + la tendance de la catégorie).
+    q = select(Transaction.category_id).where(
+        Transaction.recurring_id.is_not(None), Transaction.booked_at >= _shift_month(today, -4), Transaction.category_id.is_not(None),
+    ).distinct()
+    if account_ids:
+        q = q.where(Transaction.account_id.in_(account_ids))
+    covered = set(db.scalars(q))
+
     for cid, by_month in per_unit.items():
+        if cid in covered and layer_of(cid, None, natures) == "fixe":
+            continue
         hist = [by_month[k] for k in keys]
         while hist and hist[0] == 0:  # mois avant la première dépense de la catégorie : pas des mois « à 0 € »
             hist.pop(0)
-        level = weighted_level(hist)
+        kind = classify(hist, visits.get(cid, []), today)
+        if kind is None:
+            continue  # une seule fois (formation, gros achat…) ou arrêté depuis longtemps : pas prévu
+        if isinstance(kind, Occasional):
+            model.units[cid] = Unit(cid, layer_of(cid, None, natures), round(kind.monthly), direction(hist), hist, 0.8, 1.2, kind)
+            continue
+        level = trend_level(hist)
         if level > 0:
-            model.units[cid] = Unit(cid, layer_of(cid, None, natures), level, direction(hist), hist)
+            lo, hi = band(hist, level)
+            model.units[cid] = Unit(cid, layer_of(cid, None, natures), level, direction(hist), hist, lo, hi)
     inc_hist = [income[k] for k in keys]
     model.other_income = weighted_level(inc_hist)
     if daily["revenu"]:
@@ -162,7 +193,83 @@ def build_model(db: Session, today: date, account_ids: list[int] | None) -> Mode
                 break
     model.other_income_direction = direction(inc_hist)
     model.profiles = {n: learn_profile(daily[n], len(keys)) for n in (*NATURES, "revenu")}
+    _learn_recent(db, model, today, account_ids)
     return model
+
+
+def _learn_recent(db: Session, model: Model, today: date, account_ids: list[int] | None) -> None:
+    """Vendeurs habituels (3 derniers mois) et dépenses déjà faites ce mois-ci, par catégorie."""
+    lo = today - timedelta(days=HABIT_WINDOW_DAYS)
+    q = select(Transaction.booked_at, Transaction.amount_cents, Transaction.category_id, Transaction.merchant_id, Merchant.name).join(
+        Merchant, Transaction.merchant_id == Merchant.id
+    ).where(
+        Transaction.booked_at >= lo, Transaction.booked_at <= today, Transaction.amount_cents < 0,
+        Transaction.counted.is_(True), Transaction.is_transfer.is_(False), Transaction.recurring_id.is_(None),
+    )
+    if account_ids:
+        q = q.where(Transaction.account_id.in_(account_ids))
+    visits: dict[int, list[tuple[date, int]]] = defaultdict(list)
+    cats: dict[int, dict[int | None, int]] = defaultdict(lambda: defaultdict(int))
+    names: dict[int, str] = {}
+    for r in db.execute(q).all():
+        visits[r.merchant_id].append((r.booked_at, -r.amount_cents))
+        cats[r.merchant_id][r.category_id] += 1
+        names[r.merchant_id] = r.name
+    for mid, pts in visits.items():
+        cid = max(cats[mid].items(), key=lambda kv: kv[1])[0]
+        if cid not in model.units or model.units[cid].layer == "fixe" or model.units[cid].occasional is not None:
+            continue
+        h = learn_habit(mid, names[mid], pts, today)
+        if h is not None:
+            model.habits.setdefault(cid, []).append(h)
+
+    q = select(Transaction.category_id, Transaction.amount_cents).where(
+        Transaction.booked_at >= today.replace(day=1), Transaction.booked_at <= today, Transaction.amount_cents < 0,
+        Transaction.counted.is_(True), Transaction.is_transfer.is_(False), Transaction.recurring_id.is_(None),
+    )
+    if account_ids:
+        q = q.where(Transaction.account_id.in_(account_ids))
+    spent: dict[int | None, int] = defaultdict(int)
+    for r in db.execute(q).all():
+        spent[r.category_id] -= r.amount_cents
+    # Paiements par carte pas encore comptabilisés : déjà dépensés eux aussi.
+    pq = select(PendingTransaction.category_id, PendingTransaction.amount_cents).where(PendingTransaction.amount_cents < 0)
+    if account_ids:
+        pq = pq.where(PendingTransaction.account_id.in_(account_ids))
+    for r in db.execute(pq).all():
+        spent[r.category_id] -= r.amount_cents
+    model.spent_month = dict(spent)
+
+
+def _unit_days(model: Model, u: Unit, monthly: float, today: date, end: date) -> dict[date, float]:
+    """Dépense attendue chaque jour (de demain à end) pour une catégorie : vendeurs habituels + rythme de la couche ;
+    pour la fin du mois en cours, ce qui reste d'après ce qui est déjà dépensé."""
+    tomorrow = today + timedelta(days=1)
+    if end < tomorrow or monthly <= 0:
+        return {}
+    if u.occasional is not None:
+        # De temps en temps : le montant habituel d'un coup, à chaque date attendue (ramené au scénario).
+        occ, scale = u.occasional, monthly / u.monthly if u.monthly else 1.0
+        days: dict[date, float] = {}
+        d = occ.next_date
+        while d <= end:
+            if d >= tomorrow:
+                days[d] = occ.amount * scale
+            d += timedelta(days=occ.every_days)
+        return days
+    profile = model.profiles.get(u.layer, Profile())
+    habits = model.habits.get(u.category_id, [])
+    days = unit_expected(monthly, habits, profile, tomorrow, end)
+    month_end = month_bounds(today)[1]
+    rest_by_rhythm = sum(v for d, v in days.items() if d <= month_end)
+    if rest_by_rhythm > 0:
+        so_far = sum(unit_expected(monthly, habits, profile, today.replace(day=1), today).values())
+        rest = rest_of_month(rest_by_rhythm, monthly, model.spent_month.get(u.category_id, 0), so_far)
+        factor = rest / rest_by_rhythm
+        for d in days:
+            if d <= month_end:
+                days[d] *= factor
+    return days
 
 
 @dataclass
@@ -223,15 +330,21 @@ def _usual_day(db: Session, s: RecurringSeries) -> int | None:
 def _scheduled(db: Session, ids: list[int], lo: date, hi: date, names: dict[int, str]) -> list[dict]:
     """Échéances connues entre lo et hi : récurrents des comptes choisis, à leur date prudente."""
     events = []
+    raw = get_meta(db, "payday")
+    payday = int(raw) if raw and raw.isdigit() else None  # jour de paie réglé à la main (Récurrents)
     for s in _active_series(db):
         if s.account_id not in ids:
             continue
-        usual = _usual_day(db, s)
-        for d in occurrences(s.next_expected_date, s.frequency, lo, hi):
+        if s.end_date is not None and s.end_date < lo:
+            continue
+        is_pay = payday is not None and s.expected_amount_cents >= 20000 and not s.is_transfer and s.frequency == "mensuel"
+        usual = payday if is_pay else _usual_day(db, s)
+        last_ok = min(hi, s.end_date) if s.end_date is not None else hi
+        for d in occurrences(s.next_expected_date, s.frequency, lo, last_ok):
             late = s.next_expected_date is not None and d == lo and s.next_expected_date < lo
             if usual is not None:
                 moved = d.replace(day=min(usual, calendar.monthrange(d.year, d.month)[1]))
-                d = max(d, moved) if s.expected_amount_cents > 0 else min(d, moved)
+                d = moved if is_pay else max(d, moved) if s.expected_amount_cents > 0 else min(d, moved)
                 d = max(d, lo)
                 if d > hi:
                     continue
@@ -286,15 +399,26 @@ def _simulate(db: Session, today: date, end: date, ids: list[int], model: Model,
             m = _shift_month(m, 1)
     events.sort(key=lambda e: (e["date"], e["amount_cents"]))
 
-    tomorrow = today + timedelta(days=1)
-    scen = _layer_totals(model, scenario_units(db, model, sc))
+    units_scen = scenario_units(db, model, sc)
+    scen = _layer_totals(model, units_scen)
     base = _layer_totals(model, {cid: float(u.monthly) for cid, u in model.units.items()})
 
-    def spread(monthly: float, layer: str) -> dict[date, float]:
-        return expected_between(monthly, tomorrow, end, model.profiles.get(layer, Profile())) if end >= tomorrow and monthly > 0 else {}
-
-    exp = {n: spread(scen[n], n) for n in NATURES}
-    exp_base = {n: spread(base[n], n) for n in NATURES}
+    # Chaque catégorie jour par jour (avec le scénario, et sans), puis par couche ; fourchette (mois bons / mauvais).
+    exp: dict[str, dict[date, float]] = {n: defaultdict(float) for n in NATURES}
+    exp_base: dict[str, dict[date, float]] = {n: defaultdict(float) for n in NATURES}
+    exp_lo: dict[str, dict[date, float]] = {n: defaultdict(float) for n in NATURES}
+    exp_hi: dict[str, dict[date, float]] = {n: defaultdict(float) for n in NATURES}
+    unit_totals: dict[int | None, tuple[float, float]] = {}
+    for cid, u in model.units.items():
+        days_s = _unit_days(model, u, units_scen[cid], today, end)
+        days_b = days_s if units_scen[cid] == u.monthly else _unit_days(model, u, u.monthly, today, end)
+        for d, v in days_s.items():
+            exp[u.layer][d] += v
+            exp_lo[u.layer][d] += v * u.lo
+            exp_hi[u.layer][d] += v * u.hi
+        for d, v in days_b.items():
+            exp_base[u.layer][d] += v
+        unit_totals[cid] = (sum(days_s.values()), sum(days_b.values()))
 
     by_day: dict[date, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for e in events:
@@ -317,6 +441,9 @@ def _simulate(db: Session, today: date, end: date, ids: list[int], model: Model,
         c["pending"] += -ev.get("essential_pending", 0)
         c["essentiel"] += exp["essentiel"].get(d, 0)
         c["plaisir"] += exp["plaisir"].get(d, 0)
+        for n in ("essentiel", "plaisir"):
+            c[f"{n}_lo"] += exp_lo[n].get(d, 0)
+            c[f"{n}_hi"] += exp_hi[n].get(d, 0)
         c["transfer"] += ev.get("transfer", 0)
         c["extra"] += ev.get("extra", 0)
         c["base_var"] += sum(exp_base[n].get(d, 0) for n in NATURES)
@@ -330,11 +457,12 @@ def _simulate(db: Session, today: date, end: date, ids: list[int], model: Model,
         days.append({
             "date": d, "income": c["income"], "fixed": fixed, "fixed_events": c["fixed_events"], "essentiel": essentials,
             "plaisir": c["plaisir"], "transfer": c["transfer"] + c["extra"],
+            "essentiel_lo": c["pending"] + c["essentiel_lo"], "essentiel_hi": c["pending"] + c["essentiel_hi"],
+            "plaisir_lo": c["plaisir_lo"], "plaisir_hi": c["plaisir_hi"],
             "socle": socle, "after_essentials": after_ess, "balance": balance, "baseline": baseline,
         })
         d += timedelta(days=1)
-    return {"start": start, "events": events, "days": days, "layers_monthly": scen, "layers_monthly_base": base,
-            "horizon_layers": {n: sum(exp[n].values()) for n in NATURES}, "horizon_layers_base": {n: sum(exp_base[n].values()) for n in NATURES}}
+    return {"start": start, "events": events, "days": days, "layers_monthly": scen, "layers_monthly_base": base, "unit_totals": unit_totals}
 
 
 def _category_forecast(db: Session, model: Model, sc: Scenario, sim: dict) -> list[dict]:
@@ -342,11 +470,16 @@ def _category_forecast(db: Session, model: Model, sc: Scenario, sim: dict) -> li
     scen = scenario_units(db, model, sc)
     out = []
     for cid, u in model.units.items():
-        layer_scen, layer_base = sim["layers_monthly"][u.layer], sim["layers_monthly_base"][u.layer]
-        amount = sim["horizon_layers"][u.layer] * scen[cid] / layer_scen if layer_scen else 0
-        base = sim["horizon_layers_base"][u.layer] * u.monthly / layer_base if layer_base else 0
+        amount, base = sim["unit_totals"].get(cid, (0.0, 0.0))
         out.append({"category_id": cid, "layer": u.layer, "monthly_cents": u.monthly, "scenario_monthly_cents": round(scen[cid]),
-                    "amount_cents": round(amount), "base_amount_cents": round(base), "direction": u.direction})
+                    "amount_cents": round(amount), "base_amount_cents": round(base), "direction": u.direction,
+                    "spent_month_cents": model.spent_month.get(cid, 0),
+                    "occasional": {"amount_cents": u.occasional.amount, "every_days": u.occasional.every_days,
+                                   "next_date": u.occasional.next_date, "yearly_cents": round(u.occasional.yearly),
+                                   "count": u.occasional.count} if u.occasional else None,
+                    "habits": [{"merchant": h.label, "amount_cents": h.amount, "per_week": round(h.per_week, 2),
+                                "days": [i for i, w in sorted(enumerate(h.weekday), key=lambda x: -x[1])[:2] if w >= 0.25]}
+                               for h in model.habits.get(cid, [])]})
     out.sort(key=lambda x: -x["base_amount_cents"])
     return out
 
@@ -416,6 +549,11 @@ def forecast(db: Session, today: date, horizon: date, account_ids: list[int] | N
         "totals": {
             "income_cents": round(last["income"]), "fixe_cents": round(last["fixed"]), "essentiel_cents": round(last["essentiel"]),
             "plaisir_cents": round(last["plaisir"]), "epargne_cents": round(-last["transfer"]),
+            # Détail des charges fixes : échéances datées (dont à confirmer / en retard) + estimation sans date fixe.
+            "fixe_scheduled_cents": round(last["fixed_events"]),
+            "fixe_unconfirmed_cents": -sum(e["amount_cents"] for e in sim["events"] if e["kind"] == "depense" and e["status"] == "suggere"),
+            "fixe_late_cents": -sum(e["amount_cents"] for e in sim["events"] if e["kind"] == "depense" and e["late"]),
+            "fixe_estimated_cents": round(last["fixed"] - last["fixed_events"]),
         },
         # Champs gardés pour la carte d'accueil.
         "income_cents": round(last["income"]),
@@ -429,7 +567,10 @@ def forecast(db: Session, today: date, horizon: date, account_ids: list[int] | N
              "balance_cents": round(x["balance"]), "baseline_cents": round(x["baseline"]),
              # Cumuls depuis aujourd'hui (positifs), pour recalculer les courbes quand on retire une couche.
              "income_cum": round(x["income"]), "fixed_cum": round(x["fixed"]), "essentiel_cum": round(x["essentiel"]),
-             "plaisir_cum": round(x["plaisir"]), "transfer_cum": round(x["transfer"])}
+             "plaisir_cum": round(x["plaisir"]), "transfer_cum": round(x["transfer"]),
+             # Fourchette : dépenses courantes d'un mois « bon » (lo) / « mauvais » (hi).
+             "essentiel_lo_cum": round(x["essentiel_lo"]), "essentiel_hi_cum": round(x["essentiel_hi"]),
+             "plaisir_lo_cum": round(x["plaisir_lo"]), "plaisir_hi_cum": round(x["plaisir_hi"])}
             for x in days
         ],
         "model": model_view(db, model, sc),
@@ -441,7 +582,16 @@ def forecast(db: Session, today: date, horizon: date, account_ids: list[int] | N
 # --- Projection (mois par mois) -----------------------------------------------------------------
 
 
-def projection(db: Session, today: date, months: int, account_ids: list[int] | None = None, sc: Scenario | None = None) -> dict:
+def _others_net_worth(db: Session, ids: list[int]) -> int:
+    """Patrimoine hors comptes simulés : soldes des autres comptes actifs comptés dans le patrimoine."""
+    total = 0
+    for a in db.scalars(select(Account).where(Account.is_archived.is_(False), Account.include_in_net_worth.is_(True))):
+        if a.id not in ids:
+            total += current_balance(db, a.id)[0] or 0
+    return total
+
+
+def projection(db: Session, today: date, months: int, account_ids: list[int] | None = None, sc: Scenario | None = None, rate: float = 2.0) -> dict:
     """Mois par mois (le mois en cours : ce qui reste à venir), même moteur que la trésorerie."""
     sc = sc or Scenario()
     ids = account_ids or default_accounts(db)
@@ -450,6 +600,7 @@ def projection(db: Session, today: date, months: int, account_ids: list[int] | N
     end = month_bounds(_shift_month(today, months - 1))[1]
     sim = _simulate(db, today, end, ids, model, sc, names)
     out, prev = [], None
+    others = float(_others_net_worth(db, ids))
     for x in sim["days"]:
         if x["date"] != month_bounds(x["date"])[1]:
             continue
@@ -466,6 +617,10 @@ def projection(db: Session, today: date, months: int, account_ids: list[int] | N
             "baseline_end_cents": round(x["baseline"]),
         }
         row["net_cents"] = round(x["balance"] - p["balance"])
+        # Patrimoine : comptes du quotidien (simulés) + le reste (épargne, placements…), qui reçoit l'épargne du mois
+        # et rapporte `rate` % par an.
+        others = others * (1 + rate / 100 / 12) + row["epargne_cents"]
+        row["net_worth_cents"] = round(x["balance"] + others)
         out.append(row)
         prev = x
     full = out[1:] or out
@@ -477,6 +632,8 @@ def projection(db: Session, today: date, months: int, account_ids: list[int] | N
         "start_balance_cents": sim["start"],
         "end_balance_cents": out[-1]["end_balance_cents"] if out else sim["start"],
         "baseline_end_cents": out[-1]["baseline_end_cents"] if out else sim["start"],
+        "net_worth_start_cents": sim["start"] + _others_net_worth(db, ids),
+        "rate": rate,
         "avg_net_cents": round(sum(m["net_cents"] for m in full) / len(full)) if full else 0,
         "avg_saving_cents": round(sum(m["epargne_cents"] for m in full) / len(full)) if full else 0,
         "lowest": {"month": lowest["month"], "balance_cents": lowest["end_balance_cents"]} if lowest else None,
@@ -501,7 +658,9 @@ def budgets_overview(db: Session, month: date, today: date) -> dict:
     elapsed = (today - start).days + 1 if current else days
     remaining_days = days - elapsed if current else 0
 
-    model = build_model(db, today, None) if budgets or current else Model()
+    raw_global = get_meta(db, "global_budget_cents")
+    global_budget = int(raw_global) if raw_global and raw_global.isdigit() and int(raw_global) > 0 else None
+    model = build_model(db, today, None) if budgets or current or global_budget else Model()
     series = _active_series(db)
     # Prélèvements récurrents encore attendus ce mois-ci (après aujourd'hui), par catégorie.
     upcoming: dict[int | None, int] = defaultdict(int)
@@ -510,10 +669,9 @@ def budgets_overview(db: Session, month: date, today: date) -> dict:
         if s.expected_amount_cents < 0 and not s.is_transfer:
             recurring_monthly[s.category_id] -= monthly_cost(s.expected_amount_cents, s.frequency)
             if current:
-                for _ in occurrences(s.next_expected_date, s.frequency, today + timedelta(days=1), end):
+                for _ in occurrences(s.next_expected_date, s.frequency, today + timedelta(days=1), min(end, s.end_date or end)):
                     upcoming[s.category_id] -= s.expected_amount_cents
 
-    tomorrow = today + timedelta(days=1)
     items = []
     for b in budgets:
         fam = _family(parents, b.category_id)
@@ -521,14 +679,14 @@ def budgets_overview(db: Session, month: date, today: date) -> dict:
         spent = -sum(r.amount_cents for r in mine)
         recurring_spent = -sum(r.amount_cents for r in mine if r.recurring_id is not None)
         expected_recurring = sum(v for cid, v in upcoming.items() if cid in fam)
-        # Reste du mois : la tendance de chaque catégorie de la famille, répartie selon tes habitudes.
+        # Reste du mois : pour chaque catégorie de la famille, son habitude moins ce qui est déjà dépensé (voir _unit_days).
         expected_variable = 0.0
         trend = sum(v for cid, v in recurring_monthly.items() if cid in fam)
         for cid, u in model.units.items():
             if cid in fam:
                 trend += u.monthly
                 if current and remaining_days > 0:
-                    expected_variable += sum(expected_between(u.monthly, tomorrow, end, model.profiles.get(u.layer, Profile())).values())
+                    expected_variable += sum(_unit_days(model, u, u.monthly, today, end).values())
         projected = spent + expected_recurring + round(expected_variable)
         pct = spent / b.monthly_amount_cents if b.monthly_amount_cents > 0 else 0
         pace = round(b.monthly_amount_cents * elapsed / days) if current else b.monthly_amount_cents
@@ -556,7 +714,23 @@ def budgets_overview(db: Session, month: date, today: date) -> dict:
 
     budgeted = {b.category_id for b in budgets}
     tops = [i for i in items if parents.get(i["category_id"]) not in budgeted]
+
+    # Budget global : toutes les dépenses du mois (hors virements entre mes comptes).
+    glob = None
+    if global_budget:
+        spent_all = -sum(r.amount_cents for r in rows)
+        rest = sum(upcoming.values()) + round(sum(sum(_unit_days(model, u, u.monthly, today, end).values()) for u in model.units.values())) \
+            if current and remaining_days > 0 else 0
+        projected_all = spent_all + rest
+        level = "depasse" if spent_all > global_budget else "alerte" if spent_all >= 0.8 * global_budget or (current and projected_all > global_budget) else "ok"
+        glob = {
+            "budget_cents": global_budget, "spent_cents": spent_all, "projected_cents": projected_all if current else spent_all,
+            "trend_cents": round(sum(recurring_monthly.values()) + sum(u.monthly for u in model.units.values())),
+            "pace_cents": round(global_budget * elapsed / days) if current else global_budget,
+            "remaining_cents": global_budget - spent_all, "level": level,
+        }
     return {
+        "global": glob,
         "month": start.strftime("%Y-%m"),
         "is_current": current,
         "days_in_month": days,

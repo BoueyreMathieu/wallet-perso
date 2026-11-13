@@ -203,7 +203,7 @@ def _upcoming(db: Session, today: date, names: dict[int, str]) -> list[WidgetEve
     for s in series:
         if s.is_transfer or not s.expected_amount_cents:
             continue
-        for d in occurrences(s.next_expected_date, s.frequency, today, hi):
+        for d in occurrences(s.next_expected_date, s.frequency, today, min(hi, s.end_date or hi)):  # date de fin respectée
             events.append(WidgetEvent(
                 date=d, label=s.label, amount_cents=s.expected_amount_cents,
                 kind="revenu" if s.expected_amount_cents > 0 else "depense",

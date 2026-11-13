@@ -11,16 +11,18 @@ import Home from "./pages/Home";
 import Login from "./pages/Login";
 import Merchants from "./pages/Merchants";
 import Planning from "./pages/Planning";
+import Recap from "./pages/Recap";
 import Settings from "./pages/Settings";
 import Transactions from "./pages/Transactions";
 import { ThemeSwitch, ThemeToggle } from "./components/ThemeSwitch";
 import { PasswordPrompt } from "./components/PasswordPrompt";
 import { DemoBanner, DemoChip } from "./demo/DemoBanner"; // DÉMO (voir docs/demo.md)
+import { SyncOnOpen } from "./components/SyncOnOpen";
 
 const NAV = [
   { to: "/", label: "Accueil", icon: "🏠" },
-  { to: "/operations", label: "Opérations", icon: "💳" },
   { to: "/prevoir", label: "Prévoir", icon: "🔮" },
+  { to: "/operations", label: "Opérations", icon: "💳" },
   { to: "/vendeurs", label: "Vendeurs", icon: "🏪" },
   { to: "/categories", label: "Catégories", icon: "🗂️" },
   { to: "/comptes", label: "Comptes", icon: "🏦" },
@@ -115,6 +117,7 @@ export default function App() {
     <CategoriesProvider>
       <TagsProvider>
         <PasswordPrompt />
+        <SyncOnOpen />
         <div className="min-h-screen lg:flex">
           {/* Barre latérale (ordinateur) */}
           <aside className="sticky top-0 hidden h-screen w-56 shrink-0 flex-col gap-6 border-r border-slate-200/70 bg-panel p-4 lg:flex dark:border-white/5 dark:bg-panel-dark">
@@ -157,6 +160,7 @@ export default function App() {
                 <Route path="/" element={<Home />} />
                 <Route path="/operations" element={<Transactions />} />
                 <Route path="/prevoir/*" element={<Planning />} />
+                <Route path="/bilan" element={<Recap />} />
                 <Route path="/vendeurs" element={<Merchants />} />
                 <Route path="/comptes" element={<Accounts />} />
                 <Route path="/categories" element={<Categories />} />

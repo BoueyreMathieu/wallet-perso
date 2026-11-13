@@ -444,7 +444,10 @@ export function LineChart({ points, color = ACCENT, label }: { points: { label: 
   const L = 52, B = 22, T = 12, R = 12;
   if (points.length < 2) return <p className="muted text-sm">Pas encore assez d'historique.</p>;
   const vals = points.map((p) => p.value);
-  const lo = Math.min(0, ...vals), hi = niceMax(Math.max(1, ...vals));
+  // Axe resserré sur les valeurs (la courbe remplit la hauteur), avec une petite marge.
+  const vMin = Math.min(...vals), vMax = Math.max(...vals);
+  const pad = Math.max((vMax - vMin) * 0.08, 1000);
+  const lo = vMin - pad, hi = vMax + pad;
   const x = (i: number) => L + ((W - L - R) * i) / (points.length - 1);
   const y = (v: number) => T + (H - T - B) * (1 - (v - lo) / (hi - lo || 1));
   const d = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
@@ -464,7 +467,7 @@ export function LineChart({ points, color = ACCENT, label }: { points: { label: 
           setHover(Math.min(Math.max(Math.round(((px - L) / (W - L - R)) * last), 0), last));
         }}
       >
-        {[lo, (lo + hi) / 2, hi].map((t) => (
+        {[lo + pad / 2, (lo + hi) / 2, hi - pad / 2].map((t) => (
           <g key={t}>
             <line x1={L} x2={W - R} y1={y(t)} y2={y(t)} className="stroke-slate-200 dark:stroke-white/10" strokeWidth="1" />
             <text x={L - 6} y={y(t) + 4} textAnchor="end" className="fill-slate-400 text-[11px]">{compactEuros(t)}</text>
@@ -593,6 +596,11 @@ export interface TreasuryPoint {
   essentiel_cum: number;
   plaisir_cum: number;
   transfer_cum: number;
+  /** Fourchette : dépenses courantes d'un mois « bon » (lo) ou « mauvais » (hi). */
+  essentiel_lo_cum?: number;
+  essentiel_hi_cum?: number;
+  plaisir_lo_cum?: number;
+  plaisir_hi_cum?: number;
 }
 export interface DayEvent {
   date: string;
@@ -633,8 +641,12 @@ export function TreasuryChart({
   const lines = points.map((p) => {
     const fixedOnly = start + (show.revenu ? p.income_cum : 0) - p.fixed_cum + p.transfer_cum;
     const withEss = fixedOnly - (show.essentiel ? p.essentiel_cum : 0);
-    return { fixedOnly, withEss, balance: withEss - (show.plaisir ? p.plaisir_cum : 0) };
+    // Fourchette autour du solde prévu : mois « mauvais » (bas) / « bon » (haut) pour les dépenses courantes affichées.
+    const low = fixedOnly - (show.essentiel ? p.essentiel_hi_cum ?? p.essentiel_cum : 0) - (show.plaisir ? p.plaisir_hi_cum ?? p.plaisir_cum : 0);
+    const high = fixedOnly - (show.essentiel ? p.essentiel_lo_cum ?? p.essentiel_cum : 0) - (show.plaisir ? p.plaisir_lo_cum ?? p.plaisir_cum : 0);
+    return { fixedOnly, withEss, balance: withEss - (show.plaisir ? p.plaisir_cum : 0), low, high };
   });
+  const hasBand = (show.essentiel || show.plaisir) && lines.some((l) => l.high - l.low > 100);
   // Mouvements de chaque jour (différence des cumuls).
   const day = points.map((p, i) => {
     const prev = i ? points[i - 1] : { income_cum: 0, fixed_cum: 0, essentiel_cum: 0, plaisir_cum: 0, transfer_cum: 0 };
@@ -649,7 +661,7 @@ export function TreasuryChart({
 
   // --- Graphique du haut : soldes ---
   const H = Math.max(140, box.H - H2 - 4), T = 14, B = 22;
-  const vals = lines.flatMap((l) => [l.fixedOnly, l.balance, ...(show.essentiel ? [l.withEss] : [])]).concat(showBaseline ? points.map((p) => p.baseline_cents) : []);
+  const vals = lines.flatMap((l) => [l.fixedOnly, l.balance, ...(show.essentiel ? [l.withEss] : []), ...(hasBand ? [l.low, l.high] : [])]).concat(showBaseline ? points.map((p) => p.baseline_cents) : []);
   // Axe resserré sur les valeurs réelles (les courbes remplissent la hauteur), avec une petite marge.
   const vMin = Math.min(...vals), vMax = Math.max(...vals);
   const pad = Math.max((vMax - vMin) * 0.06, 1000);
@@ -712,6 +724,13 @@ export function TreasuryChart({
         ))}
         {dateLabels(H - 4)}
         {lo < 0 && <rect x={L} y={y(Math.min(0, hi))} width={W - L - R} height={y(lo) - y(Math.min(0, hi))} fill={SPENT_COLOR} opacity="0.05" />}
+        {hasBand && (
+          <path
+            d={`${path((i) => lines[i].high)} ${lines.map((_, k) => { const i = last - k; return `L${x(i).toFixed(1)},${y(lines[i].low).toFixed(1)}`; }).join(" ")} Z`}
+            fill={ACCENT}
+            opacity="0.12"
+          />
+        )}
         {showBaseline && <path d={path((i) => points[i].baseline_cents)} fill="none" stroke={MUTED_LINE} strokeWidth="1.5" strokeDasharray="2 3" />}
         <path d={path((i) => lines[i].fixedOnly)} fill="none" stroke={LAYER_COLORS.fixe} strokeWidth="2" strokeDasharray="6 4" strokeLinejoin="round" />
         {show.essentiel && show.plaisir && <path d={path((i) => lines[i].withEss)} fill="none" stroke={LAYER_COLORS.essentiel} strokeWidth="2" strokeLinejoin="round" />}
@@ -774,6 +793,7 @@ export function TreasuryChart({
           <p className="text-white/80">Charges fixes seulement : {formatCents(hl.fixedOnly)}</p>
           {show.essentiel && show.plaisir && <p className="text-white/80">+ essentiels : {formatCents(hl.withEss)}</p>}
           <p className="font-semibold">Solde prévu : {formatCents(hl.balance)}</p>
+          {hasBand && <p className="text-white/70">Fourchette : {formatCents(hl.low)} à {formatCents(hl.high)}</p>}
           {showBaseline && <p className="text-white/70">Sans scénario : {formatCents(hp.baseline_cents)}</p>}
           {dayEvents.slice(0, 4).map((e, k) => (
             <p key={k} className="text-white/90">{e.amount_cents > 0 ? "▲" : "▼"} {e.label} {formatCents(e.amount_cents)}</p>

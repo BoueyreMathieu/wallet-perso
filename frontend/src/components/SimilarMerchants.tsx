@@ -15,7 +15,8 @@ export function SimilarMerchants({ onChanged }: { onChanged: () => void }) {
     load();
   }, []);
 
-  if (groups.length === 0 && !msg) return null;
+  // Plus rien à regrouper : la carte disparaît tout de suite (même juste après le dernier regroupement).
+  if (groups.length === 0) return null;
   return (
     <section className="card space-y-3 border-accent-200 dark:border-accent-500/20">
       <div>

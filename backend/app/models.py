@@ -32,7 +32,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 
-ACCOUNT_TYPES = ("courant", "epargne", "investissement", "paypal", "especes", "credit", "bien")
+ACCOUNT_TYPES = ("courant", "epargne", "investissement", "paypal", "especes", "credit", "bien", "titres")  # titres : titres-restaurant (Edenred, Swile…)
 PROVIDERS = ("manuel", "csv", "enable_banking", "paypal", "pytr")
 CATEGORY_KINDS = ("depense", "revenu", "transfert")
 FREQUENCIES = ("hebdomadaire", "mensuelle", "trimestrielle", "annuelle")
@@ -74,6 +74,8 @@ class Connection(Base):
     status: Mapped[str] = mapped_column(String(30), default="actif")
     consent_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(300))  # dernière synchro en échec (effacée au succès suivant)
+    last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Jetons / identifiants chiffrés avec Fernet (voir app.security).
     secrets_encrypted: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -188,6 +190,8 @@ class RecurringSeries(Base):
     is_transfer: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     first_date: Mapped[date | None] = mapped_column(Date)
     last_date: Mapped[date | None] = mapped_column(Date)
+    # Dernière échéance prévue (paiement en 3 fois, abonnement résilié à une date…) ; après : « terminé ».
+    end_date: Mapped[date | None] = mapped_column(Date)
     occurrences: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     # Changement de prix : ancien montant et date du premier prélèvement au nouveau prix.
     previous_amount_cents: Mapped[int | None] = mapped_column(BigInteger)
@@ -284,6 +288,10 @@ class Goal(Base):
     target_date: Mapped[date | None] = mapped_column(Date)
     account_id: Mapped[int | None] = mapped_column(ForeignKey("account.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    icon: Mapped[str | None] = mapped_column(String(8))
+    # Sans compte rattaché : montant mis de côté, tenu à la main. Avec un compte : son solde, partagé par priorité.
+    saved_cents: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    priority: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class Holding(Base):

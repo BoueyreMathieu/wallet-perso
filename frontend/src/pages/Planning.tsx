@@ -1,7 +1,8 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
-import { Link, NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { Link, NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import {
   Account,
+  AdviceScenario,
   api,
   BudgetItem,
   BudgetsOverview,
@@ -20,6 +21,9 @@ import {
 import { CategoryIcon, CategorySelect, useCategories } from "../components/categories";
 import { ACCENT, ChartFrame, LAYER_COLORS, Legend, LineChart, ProjectionBars, TreasuryChart, TreasuryShow } from "../components/charts";
 import { BudgetBar, LEVELS, shortDate } from "../components/planning";
+import { AdvicePage } from "../components/advice";
+import { GoalsPage, useGoals } from "../components/goals";
+import { PaydaySetting, RecurringCalendar } from "../components/recurringCalendar";
 import { formatCents, isoDate, parseEuros } from "../format";
 
 const TABS = [
@@ -27,11 +31,35 @@ const TABS = [
   { to: "projection", label: "Projection", icon: "📈" },
   { to: "budgets", label: "Budgets", icon: "🎯" },
   { to: "recurrents", label: "Récurrents", icon: "🔁" },
+  { to: "objectifs", label: "Objectifs", icon: "🏁" },
+  { to: "conseils", label: "Conseils", icon: "💡" },
 ];
 
 export default function Planning() {
   // Le scénario « et si » est commun à Trésorerie et Projection (on le garde en changeant d'onglet).
-  const [sc, setSc] = useState<ScenarioState>(NO_SCENARIO);
+  // Le scénario est mémorisé sur cet appareil : on le retrouve en revenant (« ↺ Revenir à mes habitudes » l'efface).
+  const [sc, setScState] = useState<ScenarioState>(readScenario);
+  const setSc = (s: ScenarioState) => {
+    setScState(s);
+    try {
+      if (scenarioActive(s)) localStorage.setItem(SCENARIO_KEY, JSON.stringify(s));
+      else localStorage.removeItem(SCENARIO_KEY);
+    } catch {
+      /* stockage indisponible : le scénario n'est simplement pas mémorisé */
+    }
+  };
+  // « Simuler » depuis un conseil : le scénario arrive prérempli.
+  const location = useLocation();
+  useEffect(() => {
+    const s = (location.state as { scenario?: AdviceScenario } | null)?.scenario;
+    if (!s) return;
+    setSc({
+      ...NO_SCENARIO,
+      plaisirPct: s.plaisir_pct ?? 100,
+      targets: s.targets ?? {},
+      extra: s.extra_saving_cents ? String(s.extra_saving_cents / 100).replace(".", ",") : "",
+    });
+  }, [location.state]);
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Prévoir</h1>
@@ -53,6 +81,8 @@ export default function Planning() {
         <Route path="projection" element={<ProjectionPage sc={sc} setSc={setSc} />} />
         <Route path="budgets" element={<Budgets />} />
         <Route path="recurrents" element={<RecurringPage />} />
+        <Route path="conseils" element={<AdvicePage />} />
+        <Route path="objectifs" element={<GoalsPage />} />
         <Route path="*" element={<Navigate to="/prevoir/tresorerie" replace />} />
       </Routes>
     </div>
@@ -74,6 +104,15 @@ interface ScenarioState {
   off: number[];
 }
 const NO_SCENARIO: ScenarioState = { plaisirPct: 100, applyBudgets: false, targets: {}, extra: "", off: [] };
+const SCENARIO_KEY = "wallet-scenario";
+function readScenario(): ScenarioState {
+  try {
+    const v = JSON.parse(localStorage.getItem(SCENARIO_KEY) ?? "null");
+    return v && typeof v === "object" ? { ...NO_SCENARIO, ...v } : NO_SCENARIO;
+  } catch {
+    return NO_SCENARIO;
+  }
+}
 
 function scenarioBody(sc: ScenarioState): ScenarioIn {
   const targets = { ...sc.targets, ...Object.fromEntries(sc.off.map((id) => [String(id), 0])) };
@@ -116,7 +155,8 @@ function useAccountsChoice(defaults: number[] | undefined) {
 }
 
 /** « Et si… » : plaisirs, budgets appliqués, objectifs par catégorie, épargne en plus. */
-function ScenarioPanel({ sc, setSc, model }: { sc: ScenarioState; setSc: (s: ScenarioState) => void; model: ModelView | null }) {
+function ScenarioPanel({ sc, setSc, model, embedded = false }: { sc: ScenarioState; setSc: (s: ScenarioState) => void; model: ModelView | null; embedded?: boolean }) {
+  const [shown, setShown] = useState(!embedded);
   const { pathOf } = useCategories();
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState<Set<number | null>>(new Set());
@@ -148,10 +188,28 @@ function ScenarioPanel({ sc, setSc, model }: { sc: ScenarioState; setSc: (s: Sce
     setExpanded(next);
   };
 
+  const chip = active && <span className="chip ml-1 bg-accent-50 text-accent-700 dark:bg-accent-500/15 dark:text-accent-200">scénario actif</span>;
+  // Dans la carte d'un graphique : replié par défaut, un appui le déplie.
+  if (embedded && !shown) {
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3 dark:border-white/10">
+        <button className="btn-ghost -ml-3 text-sm font-medium" onClick={() => setShown(true)} aria-expanded={false}>
+          ▸ 🎛️ Et si… {chip}
+        </button>
+        {active && <button className="btn-ghost text-xs" onClick={() => setSc(NO_SCENARIO)}>↺ Revenir à mes habitudes</button>}
+      </div>
+    );
+  }
   return (
-    <section className={`card space-y-3 ${active ? "ring-2 ring-accent-200 dark:ring-accent-800" : ""}`}>
+    <section className={embedded ? "space-y-3 border-t border-slate-100 pt-3 dark:border-white/10" : `card space-y-3 ${active ? "ring-2 ring-accent-200 dark:ring-accent-800" : ""}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="section-title">🎛️ Et si… {active && <span className="chip ml-1 bg-accent-50 text-accent-700 dark:bg-accent-500/15 dark:text-accent-200">scénario actif</span>}</h2>
+        {embedded ? (
+          <button className="btn-ghost -ml-3 text-sm font-medium" onClick={() => setShown(false)} aria-expanded>
+            ▾ 🎛️ Et si… {chip}
+          </button>
+        ) : (
+          <h2 className="section-title">🎛️ Et si… {chip}</h2>
+        )}
         {active && <button className="btn-ghost text-xs" onClick={() => setSc(NO_SCENARIO)}>↺ Revenir à mes habitudes</button>}
       </div>
       <div className="grid gap-3 sm:grid-cols-3">
@@ -327,7 +385,6 @@ function Treasury({ sc, setSc }: { sc: ScenarioState; setSc: (s: ScenarioState) 
         <AccountChips selected={acc.selected} onToggle={acc.toggle} />
       </section>
 
-      <ScenarioPanel sc={sc} setSc={setSc} model={f?.model ?? null} />
 
       {error && <p className="text-sm text-red-600">{error}</p>}
       {f && (
@@ -343,7 +400,10 @@ function Treasury({ sc, setSc }: { sc: ScenarioState; setSc: (s: ScenarioState) 
             <Stat label="Point le plus bas" value={f.lowest ? formatCents(f.lowest.balance_cents) : "—"} sub={f.lowest ? shortDate(f.lowest.date) : undefined} tone={low ? "bad" : undefined} />
             <div className="card space-y-0.5 p-3 text-xs">
               <p className="flex justify-between"><span className="muted">Revenus</span><b className="tabular-nums text-emerald-700 dark:text-emerald-400">{formatCents(f.totals.income_cents)}</b></p>
-              <p className="flex justify-between"><span className="muted">Charges fixes</span><span className="tabular-nums">{formatCents(-f.totals.fixe_cents)}</span></p>
+              <p className="flex justify-between"><span className="muted">Charges fixes</span><span className="tabular-nums">{formatCents(-(f.totals.fixe_scheduled_cents ?? f.totals.fixe_cents))}</span></p>
+              {(f.totals.fixe_estimated_cents ?? 0) > 0 && (
+                <p className="flex justify-between"><span className="muted">Sans date fixe</span><span className="tabular-nums">≈ {formatCents(-(f.totals.fixe_estimated_cents ?? 0))}</span></p>
+              )}
               <p className="flex justify-between"><span className="muted">Essentiels</span><span className="tabular-nums">{formatCents(-f.totals.essentiel_cents)}</span></p>
               <p className="flex justify-between"><span className="muted">Plaisirs</span><span className="tabular-nums">{formatCents(-f.totals.plaisir_cents)}</span></p>
               {f.totals.epargne_cents !== 0 && <p className="flex justify-between"><span className="muted">Épargne</span><span className="tabular-nums">{formatCents(-f.totals.epargne_cents)}</span></p>}
@@ -361,9 +421,14 @@ function Treasury({ sc, setSc }: { sc: ScenarioState; setSc: (s: ScenarioState) 
                 <>
                   En haut, ton solde prévu (violet) et, en pointillé, ce qu'il serait si tu ne payais que tes charges fixes : l'écart montre ce
                   que coûtent tes dépenses courantes. Pastilles : échéances (vert : revenu, bleu : charge fixe). En bas, ce qui entre et sort
-                  chaque jour : les gros montants (salaire, loyer) sont écrêtés, leur montant est écrit. Essentiels et plaisirs suivent tes
-                  habitudes (tendance de chaque catégorie, répartie selon les jours où tu dépenses d'habitude). Comptes pris par défaut :
-                  comptes courants et PayPal.
+                  chaque jour : les gros montants (salaire, loyer) sont écrêtés, leur montant est écrit.
+                  <br />
+                  Essentiels et plaisirs suivent tes données : chaque catégorie a son niveau habituel (tous tes mois, les récents comptent
+                  plus ; s'il y a un vrai changement de rythme sur 2 mois, c'est lui qui compte). Tes vendeurs fréquents sont placés à leurs
+                  jours habituels avec leur montant habituel (les courses du samedi…). Pour le mois en cours, ce qui reste = ton habitude moins
+                  ce que tu as déjà dépensé. La zone autour du solde : ce que donnerait un mois « bon » ou « mauvais » d'après ton historique.
+                  <br />
+                  Comptes pris par défaut : comptes courants et PayPal.
                 </>
               }
               controls={
@@ -374,6 +439,7 @@ function Treasury({ sc, setSc }: { sc: ScenarioState; setSc: (s: ScenarioState) 
                       { label: "Charges fixes seulement", color: LAYER_COLORS.fixe, dashed: true },
                       ...(show.essentiel && show.plaisir ? [{ label: "+ essentiels", color: LAYER_COLORS.essentiel }] : []),
                       { label: "Solde prévu", color: ACCENT },
+                      ...(show.essentiel || show.plaisir ? [{ label: "fourchette (mois bons / mauvais)", color: "rgba(117,82,245,0.3)" }] : []),
                       ...(active ? [{ label: "sans scénario", color: "#94a3b8", dashed: true }] : []),
                     ]}
                   />
@@ -382,34 +448,70 @@ function Treasury({ sc, setSc }: { sc: ScenarioState; setSc: (s: ScenarioState) 
             >
               <TreasuryChart points={f.points} start={f.start_balance_cents} events={f.events} show={show} showBaseline={active} />
             </ChartFrame>
+            <ScenarioPanel sc={sc} setSc={setSc} model={f.model} embedded />
           </section>
-          <div className="grid gap-4 lg:grid-cols-3">
-          <section className="card space-y-2">
-            <h2 className="section-title">📅 Échéances d'ici le {shortDate(f.horizon)}</h2>
-            <ul className="divide-y divide-slate-100 text-sm dark:divide-white/5">
-              {f.events.map((e, i) => (
-                <li key={i} className="flex items-center justify-between gap-3 py-2">
-                  <div className="min-w-0">
-                    <p className="truncate font-medium">
-                      <span aria-hidden className={e.amount_cents > 0 ? "text-emerald-600" : "muted"}>{KIND_ICONS[e.kind]}</span> {e.label}
-                      {e.status === "suggere" && <span className="chip ml-2 bg-slate-100 text-[11px] dark:bg-white/10">à confirmer</span>}
-                      {e.status === "tendance" && <span className="chip ml-2 bg-slate-100 text-[11px] dark:bg-white/10">d'habitude</span>}
-                    </p>
-                    <p className="muted text-xs">{e.late ? "attendu (en retard)" : fmtLong(e.date)}{e.account_name ? ` · ${e.account_name}` : ""}</p>
-                  </div>
-                  <span className={`shrink-0 font-semibold tabular-nums ${e.amount_cents > 0 ? "text-emerald-600 dark:text-emerald-400" : ""}`}>{formatCents(e.amount_cents)}</span>
-                </li>
-              ))}
-              {f.events.length === 0 && <li className="muted py-2">Aucune échéance connue : confirme ou ajoute tes récurrents dans l'onglet 🔁 Récurrents.</li>}
-            </ul>
-          </section>
-          <LayerList layer="essentiel" title="🛒 Essentiels prévus" cats={f.categories} sc={sc} setSc={setSc} />
-          <LayerList layer="plaisir" title="🎉 Plaisirs prévus" cats={f.categories} sc={sc} setSc={setSc} />
+          {/* min-w-0 : sur téléphone, les cartes ne dépassent pas de l'écran (les longs noms sont tronqués). */}
+          <div className="grid items-start gap-4 md:grid-cols-2 xl:grid-cols-3 [&>*]:min-w-0">
+          <Echeances f={f} />
+          <LayerList layer="fixe" title="🧾 Charges sans date fixe" cats={f.categories} sc={sc} setSc={setSc} hideWhenEmpty />
+          <LayerList layer="essentiel" title="🛒 Essentiels prévus" cats={f.categories} sc={sc} setSc={setSc} hideWhenEmpty />
+          <LayerList layer="plaisir" title="🎉 Plaisirs prévus" cats={f.categories} sc={sc} setSc={setSc} hideWhenEmpty />
+          <OccasionalList cats={f.categories} sc={sc} setSc={setSc} />
           </div>
         </>
       )}
     </div>
   );
+}
+
+/** Échéances datées d'ici l'horizon (récurrents, revenus habituels, opérations en attente), dans l'ordre des dates,
+ *  avec en tête les totaux séparés : revenus, dépenses, épargne. */
+function Echeances({ f }: { f: Forecast }) {
+  if (f.events.length === 0) return null;
+  const sum = (pred: (e: Forecast["events"][number]) => boolean) => f.events.filter(pred).reduce((s, e) => s + e.amount_cents, 0);
+  const income = sum((e) => e.amount_cents > 0);
+  const out = sum((e) => e.amount_cents <= 0 && e.kind !== "virement");
+  const saving = sum((e) => e.amount_cents <= 0 && e.kind === "virement");
+  const unconfirmed = f.totals.fixe_unconfirmed_cents ?? 0, late = f.totals.fixe_late_cents ?? 0;
+  return (
+    <section className="card flex max-h-[32rem] flex-col gap-2">
+      <h2 className="section-title">📅 Charges fixes</h2>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+        {income !== 0 && <span>Revenus <b className="tabular-nums text-emerald-600 dark:text-emerald-400">{formatCents(income)}</b></span>}
+        {out !== 0 && <span>Dépenses <b className="tabular-nums">{formatCents(out)}</b></span>}
+        {saving !== 0 && <span>Épargne <b className="tabular-nums">{formatCents(saving)}</b></span>}
+      </div>
+      {(unconfirmed > 0 || late > 0) && (
+        <p className="muted text-xs">
+          {unconfirmed > 0 && `dont ${formatCents(-unconfirmed)} à confirmer`}
+          {unconfirmed > 0 && late > 0 && " · "}
+          {late > 0 && `dont ${formatCents(-late)} en retard (déjà payé ? vérifie dans 🔁 Récurrents)`}
+        </p>
+      )}
+      <ul className="-mr-2 min-h-0 divide-y divide-slate-100 overflow-y-auto overscroll-contain pr-2 text-sm dark:divide-white/5">
+        {f.events.map((e, i) => (
+          <li key={i} className="flex items-center justify-between gap-3 py-2">
+            <div className="min-w-0">
+              <p className="truncate font-medium">
+                <span aria-hidden className={e.amount_cents > 0 ? "text-emerald-600" : "muted"}>{KIND_ICONS[e.kind]}</span> {e.label}
+                {e.status === "suggere" && <span className="chip ml-2 bg-slate-100 text-[11px] dark:bg-white/10">à confirmer</span>}
+                {e.status === "tendance" && <span className="chip ml-2 bg-slate-100 text-[11px] dark:bg-white/10">d'habitude</span>}
+              </p>
+              <p className="muted text-xs">{e.late ? "attendu (en retard)" : fmtLong(e.date)}{e.account_name ? ` · ${e.account_name}` : ""}</p>
+            </div>
+            <span className={`shrink-0 font-semibold tabular-nums ${e.amount_cents > 0 ? "text-emerald-600 dark:text-emerald-400" : ""}`}>{formatCents(e.amount_cents)}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+const WEEKDAYS = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."];
+/** « 2×/sem (sam.) », « tous les 15 j »… */
+function habitRhythm(h: { per_week: number; days: number[] }): string {
+  const freq = h.per_week >= 0.9 ? `${Math.round(h.per_week * 10) / 10}×/sem` : `tous les ${Math.round(7 / h.per_week)} j`;
+  return h.days.length ? `${freq.replace(".", ",")} (${h.days.map((d) => WEEKDAYS[d]).join(", ")})` : freq.replace(".", ",");
 }
 
 /** Explications repliées derrière un petit « ? ». */
@@ -424,6 +526,82 @@ function Help({ children }: { children: ReactNode }) {
   );
 }
 
+/** Titre d'une carte de catégories : un appui retire toutes ses catégories des prévisions (ou les remet toutes). */
+function CardTitle({ title, total, ids, off, setOff }: { title: string; total: number; ids: number[]; off: Set<number>; setOff: (ids: number[], v: boolean) => void }) {
+  const allOff = ids.length > 0 && ids.every((id) => off.has(id));
+  return (
+    <button
+      type="button"
+      className={`-mx-1 flex items-baseline justify-between gap-2 rounded-lg px-1 text-left transition hover:bg-slate-50 dark:hover:bg-white/5 ${allOff ? "opacity-50" : ""}`}
+      onClick={() => setOff(ids, !allOff)}
+      title={allOff ? "Tout remettre" : "Tout retirer des prévisions"}
+      aria-pressed={!allOff}
+    >
+      <h2 className={`section-title ${allOff ? "line-through" : ""}`}>{title}</h2>
+      <span className="font-semibold tabular-nums">{formatCents(-total)}</span>
+    </button>
+  );
+}
+
+const longMonth = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "long" });
+/** « tous les ~3 mois », « toutes les ~6 semaines »… */
+function every(days: number): string {
+  if (days >= 300) return "~1 fois par an";
+  if (days >= 50) return `tous les ~${Math.round(days / 30.44)} mois`;
+  return `toutes les ~${Math.max(2, Math.round(days / 7))} semaines`;
+}
+
+/** Dépenses de temps en temps (coiffeur, contrôle technique…) : comptées d'un coup à la prochaine date attendue,
+ *  pas réparties chaque mois. Les dépenses arrivées une seule fois ne sont pas prévues du tout. */
+function OccasionalList({ cats, sc, setSc }: { cats: ForecastCategory[]; sc: ScenarioState; setSc: (s: ScenarioState) => void }) {
+  const { pathOf } = useCategories();
+  const items = cats.filter((c) => c.occasional).sort((a, b) => (a.occasional!.next_date < b.occasional!.next_date ? -1 : 1));
+  if (items.length === 0) return null;
+  const off = new Set(sc.off);
+  const setOff = (ids: number[], value: boolean) => {
+    const next = new Set(sc.off);
+    for (const id of ids) {
+      if (value) next.add(id);
+      else next.delete(id);
+    }
+    setSc({ ...sc, off: [...next] });
+  };
+  const isOff = (c: ForecastCategory) => c.category_id !== null && off.has(c.category_id);
+  const total = items.reduce((s, c) => s + (isOff(c) ? 0 : c.amount_cents), 0);
+  const yearly = items.reduce((s, c) => s + (c.occasional?.yearly_cents ?? 0), 0);
+  return (
+    <section className="card flex max-h-[32rem] flex-col gap-2">
+      <CardTitle title="🗓️ De temps en temps" total={total} ids={items.map((c) => c.category_id).filter((id): id is number => id !== null)} off={off} setOff={setOff} />
+      <p className="muted text-xs">Comptées d'un coup à la prochaine date habituelle · ≈ {formatCents(yearly)} par an</p>
+      <ul className="-mr-2 min-h-0 divide-y divide-slate-100 overflow-y-auto overscroll-contain pr-2 text-sm dark:divide-white/5">
+        {items.map((c) => {
+          const o = c.occasional!;
+          const out = isOff(c);
+          return (
+            <li key={c.category_id ?? 0}>
+              <button
+                className={`flex w-full items-center gap-2 py-2 text-left ${out ? "opacity-45" : ""}`}
+                disabled={c.category_id === null}
+                aria-pressed={!out}
+                onClick={() => c.category_id !== null && setOff([c.category_id], !out)}
+              >
+                <CategoryIcon id={c.category_id} size="sm" />
+                <span className="min-w-0 flex-1">
+                  <span className={`block truncate ${out ? "line-through" : ""}`}>{c.category_id === null ? "À catégoriser" : pathOf(c.category_id)}</span>
+                  <span className="muted block text-[11px]">
+                    {every(o.every_days)} · ~{formatCents(o.amount_cents)} · prochaine vers le {longMonth.format(new Date(`${o.next_date}T12:00:00`))}
+                  </span>
+                </span>
+                <span className={`shrink-0 tabular-nums ${out ? "line-through" : ""}`}>{(out ? c.base_amount_cents : c.amount_cents) ? formatCents(-(out ? c.base_amount_cents : c.amount_cents)) : "—"}</span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 /** Essentiels ou plaisirs prévus d'ici l'horizon, par catégorie. Toucher une catégorie la retire des prévisions
  *  (graphique, totaux, projection) ; la toucher à nouveau la remet. */
 function LayerList({
@@ -432,17 +610,20 @@ function LayerList({
   cats,
   sc,
   setSc,
+  hideWhenEmpty = false,
 }: {
   layer: Nature;
   title: string;
   cats: ForecastCategory[];
   sc: ScenarioState;
   setSc: (s: ScenarioState) => void;
+  hideWhenEmpty?: boolean;
 }) {
   const { byId, pathOf } = useCategories();
   const [open, setOpen] = useState<Set<number | null>>(new Set());
   const off = new Set(sc.off);
-  const items = cats.filter((c) => c.layer === layer && c.base_amount_cents > 0);
+  const items = cats.filter((c) => c.layer === layer && !c.occasional && c.base_amount_cents > 0);
+  if (hideWhenEmpty && items.length === 0) return null;
   const groups = new Map<number | null, ForecastCategory[]>();
   for (const c of items) {
     const top = c.category_id === null ? null : byId.get(c.category_id)?.parent_id ?? c.category_id;
@@ -460,23 +641,18 @@ function LayerList({
     setSc({ ...sc, off: [...next] });
   };
   const layerOff = items.filter((c) => c.category_id !== null && off.has(c.category_id)).map((c) => c.category_id as number);
+  const allIds = items.map((c) => c.category_id).filter((id): id is number => id !== null);
   const row = "flex w-full items-center gap-2 rounded-lg px-1 py-1.5 text-left transition hover:bg-slate-50 dark:hover:bg-white/5";
 
   return (
-    <section className="card space-y-2">
-      <div className="flex items-baseline justify-between gap-2">
-        <h2 className="section-title">{title}</h2>
-        <span className="font-semibold tabular-nums">{formatCents(-total)}</span>
-      </div>
-      <p className="muted flex items-center justify-between gap-2 text-xs">
-        <span>Touche une catégorie pour la retirer</span>
-        {layerOff.length > 0 && (
-          <button className="font-medium text-accent-600 hover:underline dark:text-accent-300" onClick={() => setOff(layerOff, false)}>
-            ↺ tout remettre
-          </button>
-        )}
-      </p>
-      <ul className="text-sm">
+    <section className="card flex max-h-[32rem] flex-col gap-2">
+      <CardTitle title={title} total={total} ids={allIds} off={off} setOff={setOff} />
+      {layerOff.length > 0 && (
+        <button className="self-end text-xs font-medium text-accent-600 hover:underline dark:text-accent-300" onClick={() => setOff(layerOff, false)}>
+          ↺ tout remettre
+        </button>
+      )}
+      <ul className="-mr-2 min-h-0 overflow-y-auto overscroll-contain pr-2 text-sm">
         {sorted.map(([top, list]) => {
           const ids = list.map((c) => c.category_id).filter((id): id is number => id !== null);
           const allOff = ids.length > 0 && ids.every((id) => off.has(id));
@@ -518,6 +694,13 @@ function LayerList({
                           <span className="muted shrink-0 tabular-nums">≈ {formatCents(c.monthly_cents)}/mois {ARROWS[c.direction]}</span>
                           <span className={`w-20 shrink-0 text-right tabular-nums ${isOff ? "line-through" : ""}`}>{formatCents(-(isOff ? c.base_amount_cents : c.amount_cents))}</span>
                         </button>
+                        {!isOff && ((c.spent_month_cents ?? 0) > 0 || (c.habits ?? []).length > 0) && (
+                          <p className="muted -mt-1 pb-1 pl-1 text-[11px]">
+                            {(c.spent_month_cents ?? 0) > 0 && `déjà ${formatCents(c.spent_month_cents ?? 0)} ce mois-ci`}
+                            {(c.spent_month_cents ?? 0) > 0 && (c.habits ?? []).length > 0 && " · "}
+                            {(c.habits ?? []).map((h) => `${h.merchant} ${habitRhythm(h)} ~${formatCents(h.amount_cents)}`).join(" · ")}
+                          </p>
+                        )}
                       </li>
                     );
                   })}
@@ -554,6 +737,8 @@ const monthLabel = (key: string) => {
 function ProjectionPage({ sc, setSc }: { sc: ScenarioState; setSc: (s: ScenarioState) => void }) {
   const [months, setMonths] = useState(12);
   const [until, setUntil] = useState("");
+  const [rate, setRate] = useState(2);
+  const { goals } = useGoals();
   const [p, setP] = useState<Projection | null>(null);
   const [error, setError] = useState<string | null>(null);
   const acc = useAccountsChoice(p?.account_ids);
@@ -563,15 +748,18 @@ function ProjectionPage({ sc, setSc }: { sc: ScenarioState; setSc: (s: ScenarioS
     const t = setTimeout(() => {
       const params = new URLSearchParams(until ? { until } : { months: String(months) });
       if (acc.chosen) params.set("accounts", acc.chosen.join(","));
+      params.set("rate", String(rate));
       api.post<Projection>(`/projection?${params}`, JSON.parse(body)).then((r) => {
         setP(r);
         setError(null);
       }, (e) => setError((e as Error).message));
     }, 250);
     return () => clearTimeout(t);
-  }, [months, until, acc.chosen?.join(","), body]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [months, until, acc.chosen?.join(","), body, rate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const active = p?.scenario.active ?? false;
+  const openGoals = (goals ?? []).filter((g) => g.status !== "atteint");
+  const neededForGoals = openGoals.reduce((s, g) => s + (g.monthly_needed_cents ?? 0), 0);
   const model = p?.model;
   const nextMonth = isoDate(new Date(new Date().getFullYear(), new Date().getMonth() + 2, 1)).slice(0, 7);
 
@@ -592,7 +780,6 @@ function ProjectionPage({ sc, setSc }: { sc: ScenarioState; setSc: (s: ScenarioS
         <AccountChips selected={acc.selected} onToggle={acc.toggle} />
       </section>
 
-      <ScenarioPanel sc={sc} setSc={setSc} model={model ?? null} />
 
       {error && <p className="text-sm text-red-600">{error}</p>}
       {p && (
@@ -642,6 +829,7 @@ function ProjectionPage({ sc, setSc }: { sc: ScenarioState; setSc: (s: ScenarioS
                 }))}
               />
             </ChartFrame>
+            <ScenarioPanel sc={sc} setSc={setSc} model={model ?? null} embedded />
           </section>
 
           <section className="card space-y-2">
@@ -649,6 +837,60 @@ function ProjectionPage({ sc, setSc }: { sc: ScenarioState; setSc: (s: ScenarioS
               <LineChart label="Solde prévu en fin de mois" points={p.months.map((m) => ({ label: monthLabel(m.month), value: m.end_balance_cents }))} />
             </ChartFrame>
           </section>
+
+          {p.months.some((m) => m.net_worth_cents !== undefined) && (
+            <section className="card space-y-2">
+              <ChartFrame
+                title="💎 Patrimoine prévu"
+                help="Tes comptes du quotidien (ci-dessus) + tous tes autres comptes (livrets, placements…). Ces derniers reçoivent ce que tu épargnes chaque mois et rapportent le rendement choisi (une hypothèse : les taux changent)."
+                controls={
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="muted">Rendement de l'épargne</span>
+                    {[0, 2, 4, 6].map((v) => (
+                      <button key={v} className={`chip px-3 py-1 ${rate === v ? "bg-accent-600 text-white" : "bg-slate-100 dark:bg-white/5"}`} onClick={() => setRate(v)}>
+                        {v} % / an
+                      </button>
+                    ))}
+                    {p.net_worth_start_cents !== undefined && p.months.length > 0 && (
+                      <span className="ml-auto tabular-nums">
+                        {formatCents(p.net_worth_start_cents)} → <b>{formatCents(p.months[p.months.length - 1].net_worth_cents ?? 0)}</b>
+                      </span>
+                    )}
+                  </div>
+                }
+              >
+                <LineChart label="Patrimoine prévu" color="#0f9f6e" points={p.months.map((m) => ({ label: monthLabel(m.month), value: m.net_worth_cents ?? 0 }))} />
+              </ChartFrame>
+            </section>
+          )}
+
+          {openGoals.length > 0 && (
+            <section className="card space-y-2">
+              <h2 className="section-title">🏁 Mes objectifs</h2>
+              <ul className="space-y-1 text-sm">
+                {openGoals.map((g) => (
+                  <li key={g.id} className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="truncate">{g.icon || "🎯"} {g.name}</span>
+                    <span className="muted tabular-nums">
+                      reste {formatCents(g.remaining_cents)}
+                      {g.monthly_needed_cents !== null && ` · ${formatCents(g.monthly_needed_cents)} / mois`}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {neededForGoals > 0 && (
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <p className="muted text-sm">
+                    {formatCents(neededForGoals)} / mois pour tenir tes dates ; il te reste en moyenne {formatCents(p.avg_net_cents)} / mois.
+                  </p>
+                  <button className="btn px-3 py-1 text-xs" onClick={() => setSc({ ...sc, extra: String(neededForGoals / 100).replace(".", ",") })}>
+                    🎛️ Simuler cette épargne
+                  </button>
+                </div>
+              )}
+              <Link to="/prevoir/objectifs" className="text-xs text-accent-600 hover:underline dark:text-accent-300">Gérer mes objectifs →</Link>
+            </section>
+          )}
 
           <section className="card space-y-2 overflow-x-auto">
             <h2 className="section-title">Le détail</h2>
@@ -772,6 +1014,8 @@ function Budgets() {
         )}
       </section>
 
+      {b && <GlobalBudget b={b} onChanged={load} />}
+
       {b && b.items.length > 0 && (
         <section className="card space-y-4">
           {b.is_current && (
@@ -828,6 +1072,59 @@ function Budgets() {
   );
 }
 
+/** Budget global : un plafond pour toutes les dépenses du mois. */
+function GlobalBudget({ b, onChanged }: { b: BudgetsOverview; onChanged: () => void }) {
+  const g = b.global ?? null;
+  const [edit, setEdit] = useState(false);
+  const [amount, setAmount] = useState(g ? String(g.budget_cents / 100).replace(".", ",") : "");
+  const save = async (cents: number | null) => {
+    await api.put("/budgets/global", { monthly_amount_cents: cents });
+    setEdit(false);
+    onChanged();
+  };
+  if (!g && !edit) {
+    return (
+      <button className="card flex w-full items-center justify-between gap-2 text-left text-sm transition hover:shadow-md" onClick={() => setEdit(true)}>
+        <span><span className="section-title">🧮 Budget global</span><span className="muted block text-xs">Un plafond pour toutes tes dépenses du mois</span></span>
+        <span className="text-accent-600 dark:text-accent-300">+ Définir</span>
+      </button>
+    );
+  }
+  const lv = g ? LEVELS[g.level] : null;
+  const item = g ? { ...g, category_id: 0, alert_threshold_pct: 80, recurring_spent_cents: 0, expected_recurring_cents: 0 } as BudgetItem : null;
+  return (
+    <section className="card space-y-2">
+      <button type="button" className="block w-full space-y-1.5 text-left" onClick={() => setEdit(!edit)} aria-expanded={edit}>
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+          <span className="section-title">🧮 Budget global <span className="muted text-xs" aria-hidden>✎</span></span>
+          {g && lv && (
+            <span className="tabular-nums">
+              <span className={`font-semibold ${lv.text}`}>{formatCents(g.spent_cents)}</span>
+              <span className="muted"> / {formatCents(g.budget_cents)}</span>
+              <span className="ml-2 text-xs">{lv.icon} {lv.label}</span>
+            </span>
+          )}
+        </div>
+        {item && <BudgetBar item={item} showPace={b.is_current} />}
+        {g && (
+          <p className="muted text-xs">
+            {g.remaining_cents >= 0 ? `Reste ${formatCents(g.remaining_cents)}` : `Dépassé de ${formatCents(-g.remaining_cents)}`}
+            {b.is_current && ` · fin de mois ≈ ${formatCents(g.projected_cents)}`} · d'habitude ≈ {formatCents(g.trend_cents)} / mois
+          </p>
+        )}
+      </button>
+      {edit && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl bg-slate-50 p-2 dark:bg-white/5">
+          <input className="input w-32" inputMode="decimal" placeholder="Montant €" value={amount} onChange={(e) => setAmount(e.target.value)} aria-label="Budget global mensuel" />
+          <button className="btn" onClick={() => { const c = parseEuros(amount); if (c && c > 0) save(c); }}>Enregistrer</button>
+          {g && <button className="btn-ghost text-red-600" onClick={() => save(null)}>Supprimer</button>}
+          <button className="btn-ghost" onClick={() => setEdit(false)}>Annuler</button>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function BudgetRow({
   item,
   label,
@@ -847,24 +1144,34 @@ function BudgetRow({
   const lv = LEVELS[item.level];
   return (
     <li className="space-y-1.5">
-      <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-        <button className="flex min-w-0 items-center gap-2 text-left" onClick={() => setEdit(!edit)} title="Modifier">
-          <CategoryIcon id={item.category_id} size="sm" />
-          <span className="truncate font-medium">{label}</span>
-        </button>
-        <span className="tabular-nums">
-          <span className={`font-semibold ${lv.text}`}>{formatCents(item.spent_cents)}</span>
-          <span className="muted"> / {formatCents(item.budget_cents)}</span>
-          <span className="ml-2 text-xs">{lv.icon} {lv.label}</span>
-        </span>
-      </div>
-      <BudgetBar item={item} showPace={current} />
-      <p className="muted text-xs">
-        {item.remaining_cents >= 0 ? `Reste ${formatCents(item.remaining_cents)}` : `Dépassé de ${formatCents(-item.remaining_cents)}`}
-        {current && ` · fin de mois ≈ ${formatCents(item.projected_cents)}`}
-        {current && item.expected_recurring_cents > 0 && ` (dont ${formatCents(item.expected_recurring_cents)} de prélèvements à venir)`}
-        {item.trend_cents > 0 && ` · d'habitude ≈ ${formatCents(item.trend_cents)} / mois`}
-      </p>
+      {/* Toute la ligne ouvre / ferme la modification. */}
+      <button
+        type="button"
+        className={`-mx-2 block w-[calc(100%+1rem)] space-y-1.5 rounded-xl px-2 py-1.5 text-left transition hover:bg-slate-50 dark:hover:bg-white/5 ${edit ? "bg-slate-50 dark:bg-white/5" : ""}`}
+        onClick={() => setEdit(!edit)}
+        aria-expanded={edit}
+        title="Modifier ce budget"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+          <span className="flex min-w-0 items-center gap-2">
+            <CategoryIcon id={item.category_id} size="sm" />
+            <span className="truncate font-medium">{label}</span>
+            <span className="muted text-xs" aria-hidden>✎</span>
+          </span>
+          <span className="tabular-nums">
+            <span className={`font-semibold ${lv.text}`}>{formatCents(item.spent_cents)}</span>
+            <span className="muted"> / {formatCents(item.budget_cents)}</span>
+            <span className="ml-2 text-xs">{lv.icon} {lv.label}</span>
+          </span>
+        </div>
+        <BudgetBar item={item} showPace={current} />
+        <p className="muted text-xs">
+          {item.remaining_cents >= 0 ? `Reste ${formatCents(item.remaining_cents)}` : `Dépassé de ${formatCents(-item.remaining_cents)}`}
+          {current && ` · fin de mois ≈ ${formatCents(item.projected_cents)}`}
+          {current && item.expected_recurring_cents > 0 && ` (dont ${formatCents(item.expected_recurring_cents)} de prélèvements à venir)`}
+          {item.trend_cents > 0 && ` · d'habitude ≈ ${formatCents(item.trend_cents)} / mois`}
+        </p>
+      </button>
       {edit && (
         <div className="flex flex-wrap items-center gap-2 rounded-xl bg-slate-50 p-2 dark:bg-white/5">
           <input className="input w-28" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} aria-label="Budget mensuel" />
@@ -963,6 +1270,8 @@ function RecurringPage() {
       </section>
       {msg && <p className="muted text-sm">{msg}</p>}
       {adding && <ManualRecurringForm onDone={() => { setAdding(false); load(); }} />}
+      <section className="card"><PaydaySetting /></section>
+      <RecurringCalendar items={data.items} />
 
       {toConfirm.length > 0 && (
         <section className="card space-y-2 border-accent-200 dark:border-accent-500/20">
@@ -1027,6 +1336,7 @@ function RecurringRow({
   const since = r.first_date ? new Date(`${r.first_date}T12:00:00`).toLocaleDateString("fr-FR", { month: "short", year: "numeric" }) : null;
   let when = r.next_date ? `prochain : ${shortDate(r.next_date)}` : "";
   if (r.maybe_ended) when = `pas vu depuis le ${r.last_date ? shortDate(r.last_date) : "?"} — résilié ?`;
+  if (r.end_date && r.status !== "termine") when += ` · jusqu'au ${shortDate(r.end_date)}`;
   else if (r.late_days > 0) when = `attendu le ${shortDate(r.next_date!)} (en retard de ${r.late_days} j)`;
   return (
     <li className="py-2">
@@ -1074,6 +1384,7 @@ function RecurringDetail({
   const [freq, setFreq] = useState<Frequency>(r.frequency);
   const [next, setNext] = useState(r.next_date ?? "");
   const [cat, setCat] = useState<number | null>(r.category_id);
+  const [end, setEnd] = useState(r.end_date ?? "");
   useEffect(() => {
     api.get<typeof txs>(`/recurring/${r.id}/transactions`).then(setTxs);
   }, [r.id]);
@@ -1083,6 +1394,7 @@ function RecurringDetail({
       label,
       frequency: freq,
       category_id: cat,
+      ...(end !== (r.end_date ?? "") ? { end_date: end || null } : {}),
       ...(cents ? { amount_cents: r.amount_cents < 0 ? -Math.abs(cents) : Math.abs(cents) } : {}),
       ...(next ? { next_date: next } : {}),
     });
@@ -1105,6 +1417,7 @@ function RecurringDetail({
         <div className="sm:col-span-2">
           <CategorySelect value={cat} onChange={setCat} />
         </div>
+        <EndDateField value={end} onChange={setEnd} next={next} freq={freq} />
       </div>
       <div className="flex flex-wrap gap-2">
         <button className="btn" onClick={save}>Enregistrer</button>
@@ -1125,6 +1438,46 @@ function RecurringDetail({
   );
 }
 
+const PERIOD_MONTHS: Partial<Record<Frequency, number>> = { mensuel: 1, bimestriel: 2, trimestriel: 3, semestriel: 6, annuel: 12 };
+
+/** Date de la n-ième échéance (la 1re = `next`). */
+function nthDate(next: string, freq: Frequency, n: number): string {
+  const d = new Date(`${next}T12:00:00`);
+  const months = PERIOD_MONTHS[freq];
+  if (months) {
+    const day = d.getDate();
+    d.setDate(1);
+    d.setMonth(d.getMonth() + months * (n - 1));
+    d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()));
+  } else d.setDate(d.getDate() + 7 * (n - 1));
+  return isoDate(d);
+}
+
+/** Fin d'un récurrent : sans fin, une date, ou « encore N échéances » (paiement en 3 fois…). */
+function EndDateField({ value, onChange, next, freq }: { value: string; onChange: (v: string) => void; next: string; freq: Frequency }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-sm sm:col-span-2">
+      <span className="muted shrink-0">Se termine</span>
+      <select
+        className="input w-auto py-1.5"
+        value=""
+        onChange={(e) => {
+          const n = Number(e.target.value);
+          if (n === 0) onChange("");
+          else if (next) onChange(nthDate(next, freq, n));
+        }}
+        aria-label="Nombre d'échéances restantes"
+      >
+        <option value="">{value ? "Changer…" : "Jamais"}</option>
+        {value && <option value="0">Jamais (sans fin)</option>}
+        {[1, 2, 3, 4, 6, 10, 12, 24].map((n) => <option key={n} value={n}>après {n} échéance{n > 1 ? "s" : ""}</option>)}
+      </select>
+      <input className="input w-auto py-1.5" type="date" value={value} min={next || undefined} onChange={(e) => onChange(e.target.value)} aria-label="Date de la dernière échéance" />
+      {value && <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={() => onChange("")}>✕ sans fin</button>}
+    </div>
+  );
+}
+
 function ManualRecurringForm({ onDone }: { onDone: () => void }) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [label, setLabel] = useState("");
@@ -1134,6 +1487,7 @@ function ManualRecurringForm({ onDone }: { onDone: () => void }) {
   const [next, setNext] = useState(isoDate(new Date()));
   const [account, setAccount] = useState<number | null>(null);
   const [cat, setCat] = useState<number | null>(null);
+  const [end, setEnd] = useState("");
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     api.get<Account[]>("/accounts").then((list) => {
@@ -1147,7 +1501,7 @@ function ManualRecurringForm({ onDone }: { onDone: () => void }) {
     const cents = parseEuros(amount);
     if (!label.trim() || !cents || account === null) return setError("Nom, montant et compte sont nécessaires.");
     try {
-      await api.post("/recurring", { label, amount_cents: sign * Math.abs(cents), frequency: freq, next_date: next, account_id: account, category_id: cat });
+      await api.post("/recurring", { label, amount_cents: sign * Math.abs(cents), frequency: freq, next_date: next, account_id: account, category_id: cat, end_date: end || null });
       onDone();
     } catch (err) {
       setError((err as Error).message);
@@ -1177,6 +1531,7 @@ function ManualRecurringForm({ onDone }: { onDone: () => void }) {
           {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
         </select>
         <CategorySelect value={cat} onChange={setCat} />
+        <EndDateField value={end} onChange={setEnd} next={next} freq={freq} />
       </div>
       {error && <p className="text-sm text-red-600">{error}</p>}
       <div className="flex gap-2">

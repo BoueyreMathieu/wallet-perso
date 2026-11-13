@@ -25,6 +25,8 @@ interface Conn {
   status: string;
   consent_expires_at: string | null;
   last_sync_at: string | null;
+  last_error: string | null;
+  last_error_at: string | null;
   accounts: RemoteAccount[];
 }
 
@@ -189,6 +191,11 @@ export default function Connections() {
               </div>
               <span className={`rounded-full px-2 py-0.5 text-xs ${st.cls}`}>{st.label}</span>
             </div>
+            {c.last_error && (
+              <p className="rounded-xl bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
+                ⚠️ Dernière synchro en échec{c.last_error_at ? ` (${new Date(c.last_error_at).toLocaleString("fr-FR")})` : ""} : {c.last_error}
+              </p>
+            )}
             {left !== null && left <= 14 && (
               <p className="text-xs text-amber-600">
                 {left > 0 ? `L'autorisation expire dans ${left} jour(s)` : "L'autorisation a expiré"} : renouvelle-la pour que la synchro continue.

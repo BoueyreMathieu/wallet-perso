@@ -6,6 +6,7 @@ import { ServiceDraft, ServiceForm } from "../components/ServiceForm";
 import { CategoryBadge, CategoryIcon, CategorySelect } from "../components/categories";
 import { TagChip, TagPicker, TagSelect } from "../components/tags";
 import { formatCents, formatDate } from "../format";
+import { SplitEditor } from "../components/split";
 
 const PAGE = 100;
 
@@ -405,6 +406,8 @@ function EditPanel({
   const [tags, setTags] = useState<number[]>(manual);
   const [draft, setDraft] = useState<ServiceDraft | null>(null);
   const [editingManual, setEditingManual] = useState(false);
+  const [splitting, setSplitting] = useState(false);
+  const splitTarget = t.source === "decoupe" ? Number(t.details?.part_de) || null : t.id;
 
   const remove = async () => {
     const msg =
@@ -470,10 +473,21 @@ function EditPanel({
           Virement entre tes comptes ({t.amount_cents < 0 ? "vers" : "depuis"} « {t.pair_account} ») : exclu des dépenses et des revenus.
         </p>
       )}
-      {!t.counted && (
+      {t.source === "decoupe" && (
+        <p className="text-xs text-slate-500">
+          ✂️ Part d'une opération découpée{t.details?.avance ? ` · avancée pour ${t.details.avance.person ?? "quelqu'un"} (pas une dépense)` : ""}.
+        </p>
+      )}
+      {!t.counted && t.source !== "decoupe" && (
         <p className="text-xs text-slate-500">
           Cette ligne n'est pas comptée dans les statistiques
-          {t.linked_id ? " : la dépense est déjà comptée sur l'opération bancaire rapprochée." : " (mouvement technique)."}
+          {t.details?.decoupee
+            ? " : elle est découpée, ce sont ses parts qui comptent."
+            : t.details?.remboursement_de
+              ? " : c'est un remboursement d'avance (pas un revenu)."
+              : t.linked_id
+                ? " : la dépense est déjà comptée sur l'opération bancaire rapprochée."
+                : " (mouvement technique)."}
         </p>
       )}
 
@@ -520,7 +534,15 @@ function EditPanel({
           + Créer un service à partir de cette opération
         </button>
       )}
+      {splitting && splitTarget !== null && (
+        <SplitEditor txId={splitTarget} category={t.category_id} onDone={() => { setSplitting(false); onChanged(); }} />
+      )}
       <div className="flex flex-wrap gap-2 border-t border-slate-200 pt-2 dark:border-slate-700">
+        {!t.is_transfer && !splitting && splitTarget !== null && (t.counted || t.details?.decoupee || t.source === "decoupe") && (
+          <button className="btn-ghost" onClick={() => setSplitting(true)}>
+            ✂️ {t.details?.decoupee || t.source === "decoupe" ? "Modifier le découpage" : "Découper / partager"}
+          </button>
+        )}
         {t.source === "manuel" && (
           <button className="btn-ghost" onClick={() => setEditingManual(true)}>Modifier l'opération</button>
         )}

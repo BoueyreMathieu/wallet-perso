@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-AccountType = Literal["courant", "epargne", "investissement", "paypal", "especes", "credit", "bien"]
+AccountType = Literal["courant", "epargne", "investissement", "paypal", "especes", "credit", "bien", "titres"]
 
 
 class LoginIn(BaseModel):

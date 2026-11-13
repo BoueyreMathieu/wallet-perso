@@ -115,3 +115,14 @@ d'explication, 2×2 = + détails, 3×3 et plus = + liste complète ou courbe.
   et à chaque fois qu'on quitte l'appli.
 - Hors connexion (Tailscale coupé, serveur éteint) : dernières valeurs connues + message.
 - Clic : ouvre l'appli sur la bonne page (accueil, comptes, opérations, « à catégoriser », nouvelle dépense).
+
+## Montants masqués (20e passe)
+
+- Par défaut, chaque widget est **flouté** (`widget/Privacy.java`) : la carte est dessinée hors écran, réduite puis
+  ré-agrandie avec lissage (flou doux), avec « 👁 Toucher pour afficher » par-dessus.
+- Un appui l'affiche pendant **5 minutes**, puis il se re-floute tout seul (alarme) ; le bouton 🙈 le re-floute tout de
+  suite. Un appui ailleurs sur un widget affiché ouvre la page de l'appli, comme avant.
+- État gardé par widget (`SharedPreferences` « wallet_widget_privacy »). Layout : `wallet_widget_blur.xml`.
+- Plaisirs en magenta (`Charts.LAYER_PLAISIR` = #D9468C), comme dans l'appli.
+- 0.9 : flou « verre givré » (voile laiteux, reflet, grain fin) ; écran de choix du compte aux couleurs posées à la main
+  (il apparaissait vide : texte blanc sur fond blanc) ; version de l'appli = version de `package.json` (`prepare-android.mjs`).

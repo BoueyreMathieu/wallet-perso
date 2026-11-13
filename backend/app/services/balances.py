@@ -13,6 +13,9 @@ from sqlalchemy.orm import Session
 
 from app.models import BalanceSnapshot, Transaction
 
+# Parts d'une opération découpée : elles remplacent l'opération dans les statistiques, pas dans le solde.
+SPLIT_SOURCE = "decoupe"
+
 
 def _aware(d: datetime | None) -> datetime | None:
     if d is None:
@@ -28,7 +31,7 @@ def current_balance(db: Session, account_id: int) -> tuple[int | None, date | No
         .limit(1)
     )
     q = select(Transaction.booked_at, Transaction.amount_cents, Transaction.source, Transaction.created_at).where(
-        Transaction.account_id == account_id
+        Transaction.account_id == account_id, Transaction.source != SPLIT_SOURCE
     )
     if snap is not None:
         q = q.where(Transaction.booked_at >= snap.date)

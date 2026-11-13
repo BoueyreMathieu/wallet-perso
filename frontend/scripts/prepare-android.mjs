@@ -152,4 +152,19 @@ if (walletKeyFile.exists()) { walletKeyFile.withInputStream { walletKey.load(it)
   }
 }
 
+// Version de l'appli = version de package.json (0.9.0 → versionName "0.9.0", versionCode 900).
+if (fs.existsSync(gradlePath)) {
+  const version = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version;
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(version ?? "");
+  if (m) {
+    const code = Number(m[1]) * 10000 + Number(m[2]) * 100 + Number(m[3]);
+    const before = fs.readFileSync(gradlePath, "utf8");
+    const after = before.replace(/versionCode\s+\d+/, `versionCode ${code}`).replace(/versionName\s+"[^"]*"/, `versionName "${version}"`);
+    if (after !== before) {
+      fs.writeFileSync(gradlePath, after);
+      console.log(`build.gradle : version ${version} (code ${code}).`);
+    }
+  }
+}
+
 console.log("Projet Android prêt : ouvre frontend/android dans Android Studio (ou npx cap open android).");

@@ -29,6 +29,7 @@ import fr.walletperso.app.R;
  * - Affichage qui s'adapte à la taille : TINY (1 case), SMALL (bandeau), MEDIUM (2×2), LARGE (3×3 et plus).
  *   Android 12+ choisit lui-même la bonne version quand on redimensionne ; avant, on relit la taille du widget.
  * - ↻ met à jour tous les widgets d'un coup ; toucher le widget ouvre la bonne page de l'appli.
+ * - Montants masqués par défaut (flou, voir Privacy) : un appui les affiche, 🙈 les re-masque.
  */
 public abstract class BaseWidget extends AppWidgetProvider {
     static final String ACTION_REFRESH = "fr.walletperso.app.widget.REFRESH";
@@ -79,9 +80,27 @@ public abstract class BaseWidget extends AppWidgetProvider {
     @Override
     public void onReceive(Context ctx, Intent intent) {
         super.onReceive(ctx, intent);
-        if (ACTION_REFRESH.equals(intent.getAction())) {
+        String action = intent.getAction();
+        if (ACTION_REFRESH.equals(action)) {
             final PendingResult pending = goAsync();
             refreshAll(ctx.getApplicationContext(), true, pending);
+        } else if (Privacy.ACTION_REVEAL.equals(action) || Privacy.ACTION_HIDE.equals(action)) {
+            int id = intent.getIntExtra("widget_id", AppWidgetManager.INVALID_APPWIDGET_ID);
+            if (id == AppWidgetManager.INVALID_APPWIDGET_ID) return;
+            final Context app = ctx.getApplicationContext();
+            if (Privacy.ACTION_REVEAL.equals(action)) Privacy.reveal(app, getClass(), id);
+            else Privacy.hide(app, id);
+            // Redessin depuis le dernier résumé reçu (pas d'appel réseau : l'affichage est immédiat).
+            final PendingResult pending = goAsync();
+            new Thread(() -> {
+                try {
+                    JSONObject cached = WalletApi.cached(app);
+                    draw(app, AppWidgetManager.getInstance(app), id,
+                            new WalletApi.Result(cached, cached != null ? "Données en cache" : "Chargement…", cached != null));
+                } finally {
+                    pending.finish();
+                }
+            }).start();
         }
     }
 
@@ -154,6 +173,26 @@ public abstract class BaseWidget extends AppWidgetProvider {
     }
 
     private RemoteViews build(Context ctx, int id, WalletApi.Result r, Size size) {
+        RemoteViews card = buildCard(ctx, id, r, size);
+        if (Privacy.revealed(ctx, id) || r.data == null) {
+            if (r.data != null) {
+                card.setViewVisibility(R.id.widget_hide, View.VISIBLE);
+                card.setOnClickPendingIntent(R.id.widget_hide, Privacy.hideIntent(ctx, getClass(), id));
+            }
+            return card;
+        }
+        // Masqué : la carte floutée ; un appui l'affiche.
+        RemoteViews blur = new RemoteViews(ctx.getPackageName(), R.layout.wallet_widget_blur);
+        android.graphics.Bitmap b = Privacy.blurred(ctx, card, size);
+        if (b != null) blur.setImageViewBitmap(R.id.widget_blur, b);
+        blur.setTextViewText(R.id.widget_blur_title, size == Size.TINY ? "" : title(ctx, id, r.data));
+        if (size == Size.TINY) blur.setTextViewText(R.id.widget_blur_hint, "👁");
+        blur.setOnClickPendingIntent(R.id.widget_root, Privacy.revealIntent(ctx, getClass(), id));
+        return blur;
+    }
+
+    /** La carte normale (montants visibles). */
+    private RemoteViews buildCard(Context ctx, int id, WalletApi.Result r, Size size) {
         Card c = new Card(ctx, size);
         c.title(title(ctx, id, r.data));
         c.rv.setOnClickPendingIntent(R.id.widget_root, openApp(ctx, deepLink(ctx, id, r.data), id));

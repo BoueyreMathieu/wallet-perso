@@ -143,6 +143,10 @@ def _seed(c, today: date) -> None:
             c.patch(f"/api/recurring/{s['id']}", json={"status": "actif"})
     for name, cents in (("Courses", 38000), ("Restaurants", 9000), ("Bars", 8000), ("Livraison", 6000)):
         c.put(f"/api/budgets/{cats[name]}", json={"monthly_amount_cents": cents})
+    in_a_year = (today.replace(day=1) + timedelta(days=400)).replace(day=1)
+    c.post("/api/goals", json={"name": "Matelas de sécurité (démo)", "icon": "🛟", "target_cents": 400000, "account_id": livret})
+    c.post("/api/goals", json={"name": "Voyage (démo)", "icon": "✈️", "target_cents": 250000, "account_id": livret,
+                               "target_date": in_a_year.isoformat(), "priority": 1})
 
 
 def _record(c, today: date) -> dict:
@@ -162,12 +166,14 @@ def _record(c, today: date) -> dict:
     for p in ("/auth/me", "/accounts", "/accounts?include_archived=true", "/accounts/net-worth", "/categories", "/categories/usage",
               "/tags", "/budgets", "/recurring", "/recurring?all=true", "/forecast", "/merchants", "/merchants?include_inactive=true",
               "/merchants/similar", "/transactions/to-categorize", "/connections", "/data/imports", "/pending", "/dashboard",
-              "/dashboard/months"):
+              "/dashboard/months", "/advice", "/goals", "/recap", "/advances", "/settings/payday",
+              "/settings/home-layout?platform=web", "/settings/home-layout?platform=mobile"):
         get(p)
     for m in _months_back(today, 13):
         get(f"/dashboard?month={m:%Y-%m}")
     for m in _months_back(today, 4):
         get(f"/budgets?month={m:%Y-%m}")
+        get(f"/recap?month={m:%Y-%m}")
     for a in c.get("/api/accounts").json():
         get(f"/pending?account_id={a['id']}")
         get(f"/dashboard/months?accounts={a['id']}")

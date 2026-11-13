@@ -174,6 +174,12 @@ def refresh(db: Session, today: date | None = None) -> dict:
     for key, pts in by_account.items():
         process(key, pts, detect_regular_income)
 
+    # Date de fin dépassée : la série est terminée (plus d'échéance prévue).
+    for s in series:
+        if s.end_date is not None and s.end_date < today and s.status in ("actif", "suggere"):
+            s.status = "termine"
+            touched.add(s.id)
+
     # Séries non retrouvées par la détection.
     for s in series:
         if s.id in touched:
@@ -259,6 +265,7 @@ def describe(db: Session, s: RecurringSeries, today: date, totals: dict[int, int
         "next_date": s.next_expected_date,
         "last_date": s.last_date,
         "first_date": s.first_date,
+        "end_date": s.end_date,
         "occurrences": s.occurrences or 0,
         "total_cents": totals.get(s.id, 0),
         "status": s.status,

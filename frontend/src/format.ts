@@ -21,6 +21,7 @@ export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
   especes: "Espèces",
   credit: "Crédit",
   bien: "Bien (immobilier, véhicule…)",
+  titres: "Titres-restaurant (Edenred, Swile…)",
 };
 
 /** Date locale au format AAAA-MM-JJ (sans décalage de fuseau). */

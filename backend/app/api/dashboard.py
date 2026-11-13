@@ -18,7 +18,7 @@ from app.services.backup_status import backup_status
 from app.models import Account, Category, Connection, PendingTransaction, Transaction
 from app.security import require_auth
 from app.seed import resolve_paths
-from app.services.balances import current_balance
+from app.services.balances import current_balance, SPLIT_SOURCE
 
 router = APIRouter(prefix="/api/dashboard", tags=["tableau de bord"], dependencies=[Depends(require_auth)])
 
@@ -307,7 +307,8 @@ def dashboard(
     if acc_ids:
         for booked, amount in db.execute(
             select(Transaction.booked_at, Transaction.amount_cents).where(
-                Transaction.account_id.in_(acc_ids), Transaction.booked_at >= first, Transaction.booked_at <= today
+                Transaction.account_id.in_(acc_ids), Transaction.booked_at >= first, Transaction.booked_at <= today,
+                Transaction.source != SPLIT_SOURCE,
             )
         ).all():
             all_after[(booked.year, booked.month)] += amount
@@ -483,7 +484,8 @@ def months_history(
     if nw_accounts:
         for booked, amount in db.execute(
             select(Transaction.booked_at, Transaction.amount_cents).where(
-                Transaction.account_id.in_([a.id for a in nw_accounts]), Transaction.booked_at >= first, Transaction.booked_at <= today
+                Transaction.account_id.in_([a.id for a in nw_accounts]), Transaction.booked_at >= first, Transaction.booked_at <= today,
+                Transaction.source != SPLIT_SOURCE,
             )
         ).all():
             per_month[(booked.year, booked.month)] += amount

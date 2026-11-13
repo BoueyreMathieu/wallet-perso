@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import accounts, auth, categories, connections, dashboard, data, imports, merchants, planning, settings, tags, transactions, widgets
+from app.api import accounts, advice, auth, categories, connections, dashboard, data, goals, imports, merchants, planning, reports, settings, splits, tags, transactions, widgets
 from app.config import get_settings
 from app.db import get_sessionmaker
 from app.log_filters import MaskQueryFilter
@@ -24,15 +24,21 @@ logging.getLogger("uvicorn.access").addFilter(MaskQueryFilter())
 
 
 async def _sync_loop(hours: int) -> None:
-    """Synchro bancaire automatique, toutes les `hours` heures (dans un fil séparé : appels réseau bloquants)."""
-    from app.services.sync import sync_all
+    """Synchro bancaire automatique : toute connexion pas synchronisée depuis `hours` heures l'est (vérifié 2 minutes
+    après le démarrage puis tous les quarts d'heure : un redémarrage ou une mise en veille ne fait plus sauter la synchro).
+    Dans un fil séparé : appels réseau bloquants."""
+    from datetime import timedelta
+
+    from app.services.sync import sync_stale
 
     def run() -> None:
         with get_sessionmaker()() as db:
-            sync_all(db)
+            sync_stale(db, timedelta(hours=hours))
 
+    delay = 120
     while True:
-        await asyncio.sleep(hours * 3600)
+        await asyncio.sleep(delay)
+        delay = 900
         try:
             await asyncio.to_thread(run)
         except Exception as e:  # noqa: BLE001 - la boucle ne doit jamais s'arrêter
@@ -140,6 +146,10 @@ app.include_router(tags.router)
 app.include_router(connections.router)
 app.include_router(widgets.router)
 app.include_router(planning.router)
+app.include_router(advice.router)
+app.include_router(reports.router)
+app.include_router(goals.router)
+app.include_router(splits.router)
 
 
 @app.get("/api/health", tags=["système"])

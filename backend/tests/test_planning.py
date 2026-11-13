@@ -129,7 +129,8 @@ def test_forecast(auth_client):
     days = (date.fromisoformat(f["horizon"]) - date.today()).days
     assert len(f["points"]) == days + 1
     t = f["totals"]
-    assert t["fixe_cents"] == 5000 * len(energy)
+    assert t["fixe_cents"] == 5000 * len(energy) == t["fixe_scheduled_cents"] == t["fixe_unconfirmed_cents"]  # pas encore confirmé
+    assert t["fixe_estimated_cents"] == 0 and t["fixe_late_cents"] == 0
     last = f["points"][-1]
     assert last["balance_cents"] == f["end_balance_cents"]
     assert abs(f["end_balance_cents"] - (100000 + t["income_cents"] - t["fixe_cents"] - t["essentiel_cents"] - t["plaisir_cents"] - t["epargne_cents"])) <= 3
@@ -160,6 +161,8 @@ def test_layers_projection_scenario_and_category_nature(auth_client):
         op(month + timedelta(days=shop_day - 1), -(12000 + 700 * i), "CB SUPERMARCHE", merchant="Supermarché inventé", category=cats["Courses"]["id"])
         op(month + timedelta(days=19), -18000, "CB MARCHE", merchant=f"Marché inventé {i}", category=cats["Courses"]["id"])
         op(month + timedelta(days=day - 1), -bar, "CB BAR INVENTE", merchant="Bar inventé", category=cats["Bars"]["id"])
+    # Une régularisation ponctuelle dans la catégorie du loyer : déjà couverte par le récurrent, pas une charge de plus.
+    op(add_months(first, -2) + timedelta(days=13), -3000, "REGULARISATION CHARGES", merchant="Régularisation inventée", category=cats["Loyer / crédit"]["id"])
     c.post("/api/recurring/refresh")
 
     rec = {i["label"]: i for i in c.get("/api/recurring").json()["items"]}
@@ -229,3 +232,25 @@ def test_salary_paid_early_is_expected_on_its_latest_usual_day(auth_client):
     dates = [date.fromisoformat(e["date"]) for e in f["events"] if e["series_id"] == salary[0]["id"]]
     assert dates and all(d.day == min(28, calendar.monthrange(d.year, d.month)[1]) or d == date.today() for d in dates)
     assert all(e["kind"] == "revenu" for e in f["events"] if e["series_id"] == salary[0]["id"])
+
+
+def test_recurring_end_date_stops_forecast(auth_client):
+    c = auth_client
+    acc, cats, _op = _setup(c)
+    first = date.today() + timedelta(days=3)
+    end = add_months(first, 2)  # 3 échéances : first, +1 mois, +2 mois
+    r = c.post("/api/recurring", json={"label": "Paiement en 3 fois inventé", "account_id": acc["id"], "amount_cents": -10000,
+                                       "frequency": "mensuel", "next_date": first.isoformat(), "end_date": end.isoformat()})
+    assert r.status_code == 201 and r.json()["end_date"] == end.isoformat()
+    f = c.get("/api/forecast", params={"horizon": 365}).json()
+    assert len([e for e in f["events"] if e["label"] == "Paiement en 3 fois inventé"]) == 3
+    # Fin retirée : l'échéance revient chaque mois ; fin dans le passé : terminé.
+    sid = r.json()["id"]
+    assert c.patch(f"/api/recurring/{sid}", json={"end_date": None}).json()["end_date"] is None
+    f = c.get("/api/forecast", params={"horizon": 365}).json()
+    assert len([e for e in f["events"] if e["label"] == "Paiement en 3 fois inventé"]) >= 12
+    past = (date.today() - timedelta(days=1)).isoformat()
+    assert c.patch(f"/api/recurring/{sid}", json={"end_date": past}).json()["status"] == "termine"
+    bad = c.post("/api/recurring", json={"label": "X", "account_id": acc["id"], "amount_cents": -100, "frequency": "mensuel",
+                                         "next_date": first.isoformat(), "end_date": past})
+    assert bad.status_code == 422

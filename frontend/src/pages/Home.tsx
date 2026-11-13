@@ -6,6 +6,10 @@ import { CategoryIcon, UNCATEGORIZED_COLOR, useCategories } from "../components/
 import { KpiPanel } from "../components/KpiPanel";
 import { MonthsExplorer } from "../components/MonthsExplorer";
 import { BudgetsCard, ForecastCard } from "../components/planning";
+import { AdviceCard } from "../components/advice";
+import { AdvancesCard } from "../components/advances";
+import { GoalsCard } from "../components/goals";
+import { HomeCardDef, HomeGrid } from "../components/homeLayout";
 import { ACCOUNT_TYPE_LABELS, PERIODS, PeriodKey, formatCents, formatDate, isoDate, periodRange } from "../format";
 
 const monthFmt = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric" });
@@ -23,7 +27,7 @@ const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const pct = (a: number, b: number) => (b > 0 ? Math.round(((a - b) / b) * 100) : null);
 
 export const ACCOUNT_ICONS: Record<string, string> = {
-  courant: "💳", epargne: "🐷", investissement: "📈", paypal: "🅿️", especes: "💶", credit: "🧾", bien: "🏡",
+  courant: "💳", epargne: "🐷", investissement: "📈", paypal: "🅿️", especes: "💶", credit: "🧾", bien: "🏡", titres: "🍽️",
 };
 
 // Comptes choisis pour le tableau de bord : mémorisés dans ce navigateur.
@@ -68,18 +72,19 @@ function Kpi({
       type="button"
       onClick={onClick}
       aria-expanded={active}
-      className={`relative overflow-hidden rounded-2xl bg-gradient-to-br p-4 text-left text-white shadow-soft transition hover:-translate-y-0.5 hover:shadow-lg ${gradient} ${
+      className={`relative min-w-0 overflow-hidden rounded-2xl bg-gradient-to-br p-3 text-left text-white shadow-soft transition hover:-translate-y-0.5 hover:shadow-lg sm:p-4 ${gradient} ${
         active ? "ring-4 ring-accent-300 ring-offset-2 ring-offset-surface dark:ring-accent-500/60 dark:ring-offset-surface-dark" : ""
       }`}
     >
-      <div className="flex items-center justify-between">
-        <p className="text-sm font-medium text-white/85">{title}</p>
-        <span className="grid h-8 w-8 place-items-center rounded-full bg-white/20 text-base" aria-hidden>{icon}</span>
+      {/* Sur téléphone : condensé, deux cartes par ligne. */}
+      <div className="flex items-center justify-between gap-2">
+        <p className="truncate text-xs font-medium text-white/85 sm:text-sm">{title}</p>
+        <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-white/20 text-sm sm:h-8 sm:w-8 sm:text-base" aria-hidden>{icon}</span>
       </div>
-      <p className="mt-2 text-2xl font-bold tabular-nums">{value}</p>
-      <div className="mt-1 flex items-end justify-between gap-2">
-        {sub && <p className="text-xs text-white/85">{sub}</p>}
-        {children}
+      <p className="mt-1 truncate text-lg font-bold tabular-nums sm:mt-2 sm:text-2xl">{value}</p>
+      <div className="mt-0.5 flex items-end justify-between gap-2 sm:mt-1">
+        {sub && <p className="line-clamp-2 text-[11px] leading-tight text-white/85 sm:text-xs">{sub}</p>}
+        {children && <span className="hidden sm:block">{children}</span>}
       </div>
       <span className="absolute bottom-2 right-3 text-xs text-white/70" aria-hidden>{active ? "▴" : "▾"}</span>
     </button>
@@ -107,6 +112,7 @@ export default function Home() {
   const [sub, setSub] = useState<number | null>(null); // vue catégorie : sous-catégorie mise en avant
   const [active, setActive] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
 
   useEffect(() => {
     api.get<NetWorth>("/accounts/net-worth").then(setNw);
@@ -274,6 +280,11 @@ export default function Home() {
           ) : (
             <span className="text-sm font-semibold">{label}</span>
           )}
+          {!focusCat && (
+            <button className={`btn-ghost px-3 text-sm ${editing ? "text-accent-600 dark:text-accent-300" : ""}`} onClick={() => setEditing(!editing)} title="Personnaliser l'accueil" aria-pressed={editing}>
+              ✏️<span className="hidden sm:inline"> Personnaliser</span>
+            </button>
+          )}
           {!(periodKey === "month" && data.is_current) && (
             <button
               className="btn-ghost text-sm font-medium text-accent-600 dark:text-accent-300"
@@ -313,9 +324,12 @@ export default function Home() {
         </div>
       )}
 
-      {/* Chiffres clés */}
-      {focusCat ? (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {(() => {
+        // Les cartes de l'accueil (vue globale) : réorganisables, masquables ; taille ajustée automatiquement.
+        const kpis = (
+          <div className="space-y-4">
+            {focusCat ? (
+        <div className="grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-4">
           <Kpi
             title="Dépensé"
             active={panel === "spent"}
@@ -329,8 +343,8 @@ export default function Home() {
           <Kpi title="Paiements" active={panel === "merchants"} onClick={() => togglePanel("merchants")} icon="🧾" value={String(payments.length)} gradient="from-sky-500 to-indigo-500" sub={payments.length ? `en moyenne ${formatCents(Math.round(data.spent_cents / payments.length))}` : undefined} />
           <Kpi title="Plus gros paiement" active={panel === "biggest"} onClick={() => togglePanel("biggest")} icon="🔝" value={formatCents(-biggest)} gradient="from-emerald-500 to-teal-400" />
         </div>
-      ) : (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            ) : (
+        <div className="grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-4">
           <Kpi
             title={data.is_current && isMonth ? "Dépensé ce mois-ci" : "Dépensé"}
             active={panel === "spent"}
@@ -358,9 +372,8 @@ export default function Home() {
             sub={`${formatCents(data.saved_cents)} mis de côté${data.savings_rate_3m !== null ? ` · ${Math.round(data.savings_rate_3m * 100)} % sur 3 mois` : ""}`}
           />
         </div>
-      )}
-
-      {panel && (
+            )}
+            {panel && (
         <KpiPanel
           kind={panel}
           data={data}
@@ -369,44 +382,11 @@ export default function Home() {
           opsLink={`/operations?${focus !== null ? `categorie=${focus}&` : ""}${range}${selected.length === 1 ? `&compte=${selected[0]}` : ""}`}
           onClose={() => setPanel(null)}
         />
-      )}
-
-      {hasTodo && (
-        <section className="card flex flex-wrap items-center gap-3 border-amber-200 bg-amber-50 dark:border-amber-500/20 dark:bg-amber-500/10">
-          <span className="text-xl" aria-hidden>✨</span>
-          <div className="flex flex-1 flex-wrap gap-x-4 gap-y-1 text-sm">
-            {todo.to_categorize_ops > 0 && (
-              <Link to="/operations?a_categoriser=1" className="font-medium underline-offset-2 hover:underline">
-                {todo.to_categorize_ops} opération(s) à catégoriser ({todo.to_categorize_merchants} vendeur(s))
-              </Link>
-            )}
-            {todo.connections_to_renew.map((c) => (
-              <Link key={c} to="/parametres/connexions" className="font-medium hover:underline">🔑 Autorisation à renouveler : {c}</Link>
-            ))}
-            {todo.connections_in_error.map((c) => (
-              <Link key={c} to="/parametres/connexions" className="font-medium text-red-600 hover:underline">⚠️ Connexion à vérifier : {c}</Link>
-            ))}
-            {todo.backup_warning && (
-              <Link to="/parametres/securite" className="font-medium hover:underline">💾 {todo.backup_warning}</Link>
-            )}
-            {todo.budget_alerts.map((b) => (
-              <Link key={b.category_id} to="/prevoir/budgets" className={`font-medium hover:underline ${b.level === "depasse" ? "text-red-600" : ""}`}>
-                {b.level === "depasse" ? "⛔ Budget dépassé" : "⚠️ Budget à surveiller"} : {pathOf(b.category_id)}
-              </Link>
-            ))}
-            {todo.price_increases.map((label) => (
-              <Link key={label} to="/prevoir/recurrents" className="font-medium hover:underline">📈 Hausse de prix : {label}</Link>
-            ))}
-            {todo.recurring_to_confirm > 0 && (
-              <Link to="/prevoir/recurrents" className="font-medium hover:underline">🔁 {todo.recurring_to_confirm} récurrent(s) détecté(s) à confirmer</Link>
             )}
           </div>
-        </section>
-      )}
-
-      <div className="grid gap-4 lg:grid-cols-5">
-        {/* Dépenses par catégorie / par sous-catégorie */}
-        <section className="card space-y-4 lg:col-span-3">
+        );
+        const categories = (
+        <section className="card h-full space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               {focusCat && (
@@ -484,21 +464,15 @@ export default function Home() {
             </div>
           )}
         </section>
-
-        {/* À côté de la roue : derniers mouvements (vue globale) ou rythme des dépenses (vue catégorie) */}
-        {focusCat ? rhythmCard("lg:col-span-2") : <LatestMoves accounts={selected} className="lg:col-span-2" />}
-      </div>
-
-      {/* Ce mois-ci : fin de mois prévue et budgets */}
-      {!focusCat && data.is_current && (
-        <div className="grid gap-4 md:grid-cols-2">
-          <ForecastCard />
-          <BudgetsCard />
-        </div>
-      )}
-
-      {/* Vue catégorie : les paiements du mois, par sous-catégorie */}
-      {focusCat && (
+        );
+        if (focusCat) {
+          return (
+            <>
+              {kpis}
+              <div className="grid gap-4 lg:grid-cols-5">
+                <div className="lg:col-span-3">{categories}</div>
+                {rhythmCard("lg:col-span-2")}
+              </div>
         <section className="card space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="section-title">
@@ -538,9 +512,6 @@ export default function Home() {
             })}
           {data.transactions.length === 0 && <p className="muted text-sm">Aucun paiement ce mois-ci.</p>}
         </section>
-      )}
-
-      {/* Historique mois par mois (fenêtre réglable, qu'on fait défiler) */}
       <MonthsExplorer
         accounts={selected}
         categoryId={focus}
@@ -551,28 +522,6 @@ export default function Home() {
           setMonth(key);
         }}
       />
-
-      <div className={`grid gap-4 ${focusCat ? "lg:grid-cols-3" : "md:grid-cols-2"}`}>
-        {!focusCat && rhythmCard("")}
-        {!focusCat && (
-          <section className="card space-y-2">
-            <h2 className="section-title">Plus grosses dépenses</h2>
-            <ul className="divide-y divide-slate-100 dark:divide-white/5">
-              {data.top_expenses.map((t) => (
-                <li key={t.id} className="flex items-center gap-3 py-2">
-                  <CategoryIcon id={t.category_id} size="sm" />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{t.label}</p>
-                    <p className="muted text-xs">{formatDate(t.booked_at)} · {t.account_name}</p>
-                  </div>
-                  <span className="text-sm font-semibold tabular-nums">{formatCents(t.amount_cents)}</span>
-                </li>
-              ))}
-              {data.top_expenses.length === 0 && <li className="muted py-2 text-sm">Rien pour l'instant.</li>}
-            </ul>
-          </section>
-        )}
-
         <section className="card space-y-2">
           <h2 className="section-title">Vendeurs du mois</h2>
           <ul className="divide-y divide-slate-100 dark:divide-white/5">
@@ -590,8 +539,111 @@ export default function Home() {
           </ul>
           <Link to="/vendeurs" className="text-xs font-medium text-accent-600 hover:underline dark:text-accent-300">Tous les vendeurs →</Link>
         </section>
-
-        {!focusCat && (
+            </>
+          );
+        }
+        const current = data.is_current;
+        const cards: HomeCardDef[] = [
+          { id: "kpis", title: "Chiffres clés", span: 6, node: kpis },
+          { id: "todo", title: "À faire", span: 6, node: hasTodo ? (
+        <section className="card flex flex-wrap items-center gap-3 border-amber-200 bg-amber-50 dark:border-amber-500/20 dark:bg-amber-500/10">
+          <span className="text-xl" aria-hidden>✨</span>
+          <div className="flex flex-1 flex-wrap gap-x-4 gap-y-1 text-sm">
+            {todo.to_categorize_ops > 0 && (
+              <Link to="/operations?a_categoriser=1" className="font-medium underline-offset-2 hover:underline">
+                {todo.to_categorize_ops} opération(s) à catégoriser ({todo.to_categorize_merchants} vendeur(s))
+              </Link>
+            )}
+            {todo.connections_to_renew.map((c) => (
+              <Link key={c} to="/parametres/connexions" className="font-medium hover:underline">🔑 Autorisation à renouveler : {c}</Link>
+            ))}
+            {todo.connections_in_error.map((c) => (
+              <Link key={c} to="/parametres/connexions" className="font-medium text-red-600 hover:underline">⚠️ Connexion à vérifier : {c}</Link>
+            ))}
+            {todo.backup_warning && (
+              <Link to="/parametres/securite" className="font-medium hover:underline">💾 {todo.backup_warning}</Link>
+            )}
+            {todo.budget_alerts.map((b) => (
+              <Link key={b.category_id} to="/prevoir/budgets" className={`font-medium hover:underline ${b.level === "depasse" ? "text-red-600" : ""}`}>
+                {b.level === "depasse" ? "⛔ Budget dépassé" : "⚠️ Budget à surveiller"} : {pathOf(b.category_id)}
+              </Link>
+            ))}
+            {todo.price_increases.map((label) => (
+              <Link key={label} to="/prevoir/recurrents" className="font-medium hover:underline">📈 Hausse de prix : {label}</Link>
+            ))}
+            {todo.recurring_to_confirm > 0 && (
+              <Link to="/prevoir/recurrents" className="font-medium hover:underline">🔁 {todo.recurring_to_confirm} récurrent(s) détecté(s) à confirmer</Link>
+            )}
+          </div>
+        </section>
+          ) : null },
+          { id: "categories", title: "Dépenses par catégorie", span: 4, node: categories },
+          { id: "latest", title: "Derniers mouvements", span: 2, node: <LatestMoves accounts={selected} className="h-full" /> },
+          { id: "forecast", title: "Fin du mois", span: 3, node: current ? <ForecastCard className="h-full" /> : null },
+          { id: "budgets", title: "Budgets du mois", span: 3, node: current ? <BudgetsCard className="h-full" /> : null },
+          { id: "advice", title: "Conseils", span: 6, node: <AdviceCard className="h-full" /> },
+          { id: "advances", title: "On me doit", span: 3, node: <AdvancesCard className="h-full" /> },
+          { id: "goals", title: "Objectifs d'épargne", span: 3, node: <GoalsCard className="h-full" /> },
+          { id: "recap", title: "Bilan du mois dernier", span: 6, node: (
+            <Link to="/bilan" className="card flex h-full items-center justify-between gap-3 transition hover:shadow-md">
+              <span>
+                <span className="section-title">📊 Bilan du mois dernier</span>
+                <span className="muted block text-xs">Ce qui a changé, plus grosses dépenses, export Excel</span>
+              </span>
+              <span className="text-accent-600 dark:text-accent-300" aria-hidden>→</span>
+            </Link>
+          ) },
+          { id: "months", title: "Mois par mois", span: 6, node: (
+      <MonthsExplorer
+        accounts={selected}
+        categoryId={focus}
+        title="Revenus et dépenses mois par mois"
+        selected={isMonth ? data.month : undefined}
+        onSelect={(key) => {
+          setPeriodKey("month");
+          setMonth(key);
+        }}
+      />
+          ) },
+          { id: "rhythm", title: "Rythme des dépenses", span: 3, node: rhythmCard("h-full") },
+          { id: "biggest", title: "Plus grosses dépenses", span: 3, node: (
+          <section className="card space-y-2">
+            <h2 className="section-title">Plus grosses dépenses</h2>
+            <ul className="divide-y divide-slate-100 dark:divide-white/5">
+              {data.top_expenses.map((t) => (
+                <li key={t.id} className="flex items-center gap-3 py-2">
+                  <CategoryIcon id={t.category_id} size="sm" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{t.label}</p>
+                    <p className="muted text-xs">{formatDate(t.booked_at)} · {t.account_name}</p>
+                  </div>
+                  <span className="text-sm font-semibold tabular-nums">{formatCents(t.amount_cents)}</span>
+                </li>
+              ))}
+              {data.top_expenses.length === 0 && <li className="muted py-2 text-sm">Rien pour l'instant.</li>}
+            </ul>
+          </section>
+          ) },
+          { id: "merchants", title: "Vendeurs du mois", span: 3, node: (
+        <section className="card space-y-2">
+          <h2 className="section-title">Vendeurs du mois</h2>
+          <ul className="divide-y divide-slate-100 dark:divide-white/5">
+            {data.top_merchants.map((m, i) => (
+              <li key={m.merchant_id ?? i} className="flex items-center gap-3 py-2">
+                <span className="grid h-6 w-6 place-items-center rounded-full bg-accent-100 text-xs font-bold text-accent-700 dark:bg-accent-500/20 dark:text-accent-200">{i + 1}</span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{m.name}</p>
+                  <p className="muted text-xs">{m.count} achat(s)</p>
+                </div>
+                <span className="text-sm font-semibold tabular-nums">{formatCents(m.spent_cents)}</span>
+              </li>
+            ))}
+            {data.top_merchants.length === 0 && <li className="muted py-2 text-sm">Rien pour l'instant.</li>}
+          </ul>
+          <Link to="/vendeurs" className="text-xs font-medium text-accent-600 hover:underline dark:text-accent-300">Tous les vendeurs →</Link>
+        </section>
+          ) },
+          { id: "accounts", title: "Mes comptes", span: 3, node: (
           <section className="card space-y-2">
             <h2 className="section-title">Mes comptes</h2>
             <ul className="divide-y divide-slate-100 dark:divide-white/5">
@@ -614,8 +666,10 @@ export default function Home() {
               )}
             </ul>
           </section>
-        )}
-      </div>
+          ) },
+        ];
+        return <HomeGrid cards={cards} editing={editing} onCloseEditor={() => setEditing(false)} />;
+      })()}
     </div>
   );
 }

@@ -247,7 +247,9 @@ def delete_transaction(tx_id: int, db: Session = Depends(get_db)):
     t = db.get(Transaction, tx_id)
     if t is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Opération introuvable")
-    delete_transactions(db, [t])
+    from app.api.splits import parts_of  # parts d'une opération découpée : supprimées avec elle
+
+    delete_transactions(db, [t, *parts_of(db, t)])
     db.commit()
     return UpdatedOut(updated=1)
 

@@ -1,8 +1,8 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -26,6 +26,8 @@ class ConnectionOut(BaseModel):
     status: str
     consent_expires_at: datetime | None
     last_sync_at: datetime | None
+    last_error: str | None = None
+    last_error_at: datetime | None = None
     accounts: list[dict]
 
 
@@ -50,7 +52,8 @@ class SyncResultOut(BaseModel):
 def _out(c: Connection) -> ConnectionOut:
     return ConnectionOut(
         id=c.id, provider=c.provider, label=c.label, status=c.status,
-        consent_expires_at=c.consent_expires_at, last_sync_at=c.last_sync_at, accounts=sync.public_accounts(c),
+        consent_expires_at=c.consent_expires_at, last_sync_at=c.last_sync_at, last_error=c.last_error, last_error_at=c.last_error_at,
+        accounts=sync.public_accounts(c),
     )
 
 
@@ -136,6 +139,12 @@ def map_accounts(connection_id: int, body: MappingIn, db: Session = Depends(get_
     return _out(c)
 
 
+@router.post("/sync-stale", dependencies=auth)
+def sync_stale(max_age_minutes: int = Query(default=60, ge=30, le=24 * 60), db: Session = Depends(get_db)) -> dict:
+    """À l'ouverture de l'appli : synchronise les connexions pas synchronisées depuis `max_age_minutes`."""
+    return sync.sync_stale(db, timedelta(minutes=max_age_minutes))
+
+
 @router.post("/{connection_id}/sync", response_model=list[SyncResultOut], dependencies=auth)
 def sync_now(connection_id: int, db: Session = Depends(get_db)):
     c = _get(db, connection_id)
@@ -143,6 +152,7 @@ def sync_now(connection_id: int, db: Session = Depends(get_db)):
         results = sync.sync_connection(db, c)
     except (sync.SyncError, EnableBankingError) as e:
         db.rollback()
+        sync.record_error(db, connection_id, e)
         raise _fail(e) from e
     return [
         SyncResultOut(account_name=r.account_name, imported=r.imported, skipped=r.skipped, categorized=r.categorized, reconciled=r.reconciled)

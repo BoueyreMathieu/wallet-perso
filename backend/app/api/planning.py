@@ -42,6 +42,7 @@ class RecurringOut(BaseModel):
     next_date: date | None
     last_date: date | None
     first_date: date | None
+    end_date: date | None = None
     occurrences: int
     total_cents: int
     status: str
@@ -71,6 +72,7 @@ class RecurringIn(BaseModel):
     next_date: date
     category_id: int | None = None
     merchant_id: int | None = None
+    end_date: date | None = None
 
 
 class RecurringPatch(BaseModel):
@@ -80,6 +82,7 @@ class RecurringPatch(BaseModel):
     frequency: Frequency | None = None
     next_date: date | None = None
     category_id: int | None = None
+    end_date: date | None = None  # null = sans fin
 
 
 class FromTransactionIn(BaseModel):
@@ -153,10 +156,12 @@ def create_recurring(body: RecurringIn, db: Session = Depends(get_db)):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Vendeur inconnu")
     if body.amount_cents == 0:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Montant attendu non nul")
+    if body.end_date is not None and body.end_date < body.next_date:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "La date de fin doit suivre la prochaine échéance")
     s = RecurringSeries(
         label=body.label.strip(), account_id=body.account_id, expected_amount_cents=body.amount_cents,
         frequency=body.frequency, next_expected_date=body.next_date, category_id=body.category_id,
-        merchant_id=body.merchant_id, source="manuel", status="actif",
+        merchant_id=body.merchant_id, source="manuel", status="actif", end_date=body.end_date,
     )
     db.add(s)
     db.commit()
@@ -212,6 +217,13 @@ def update_recurring(series_id: int, body: RecurringPatch, db: Session = Depends
         s.next_expected_date = data["next_date"]
     if "category_id" in data:
         s.category_id = data["category_id"]
+    if "end_date" in data:
+        s.end_date = data["end_date"]
+        if s.end_date is not None and s.end_date < date.today() and s.status in ("actif", "suggere"):
+            s.status = "termine"
+        elif s.end_date is None or s.end_date >= date.today():
+            if s.status == "termine" and "status" not in data:
+                s.status = "actif"  # fin repoussée ou retirée : la série reprend
     db.commit()
     return _out(db, [s])[0]
 
@@ -260,6 +272,20 @@ def _month(month: str | None) -> date:
 @router.get("/budgets")
 def get_budgets(month: str | None = None, db: Session = Depends(get_db)) -> dict:
     return planning.budgets_overview(db, _month(month), _today())
+
+
+class GlobalBudgetIn(BaseModel):
+    monthly_amount_cents: int | None = Field(default=None, gt=0)  # null : pas de budget global
+
+
+@router.put("/budgets/global")
+def set_global_budget(body: GlobalBudgetIn, db: Session = Depends(get_db)) -> dict:
+    """Budget sur l'ensemble des dépenses du mois (en plus, ou à la place, des budgets par catégorie)."""
+    from app.seed import set_meta
+
+    set_meta(db, "global_budget_cents", str(body.monthly_amount_cents) if body.monthly_amount_cents else "")
+    db.commit()
+    return {"monthly_amount_cents": body.monthly_amount_cents}
 
 
 @router.put("/budgets/{category_id}")
@@ -387,10 +413,11 @@ def post_projection(
     months: int = Query(default=12, ge=2, le=36),
     until: str | None = Query(default=None),
     accounts: str | None = Query(default=None),
+    rate: float = Query(default=2.0, ge=0, le=15, description="rendement annuel de l'épargne (%) pour le patrimoine prévu"),
     db: Session = Depends(get_db),
 ) -> dict:
     today = _today()
-    return planning.projection(db, today, _months(today, months, until), _ids(accounts), body.to_scenario())
+    return planning.projection(db, today, _months(today, months, until), _ids(accounts), body.to_scenario(), rate=rate)
 
 
 def recurring_alerts(db: Session, today: date) -> dict:

@@ -82,7 +82,7 @@ export const api = {
   del: <T = void>(p: string) => request<T>("DELETE", p),
 };
 
-export type AccountType = "courant" | "epargne" | "investissement" | "paypal" | "especes" | "credit" | "bien";
+export type AccountType = "courant" | "epargne" | "investissement" | "paypal" | "especes" | "credit" | "bien" | "titres";
 
 export interface Account {
   id: number;
@@ -170,7 +170,8 @@ export interface Transaction {
   counted: boolean;
   linked_id: number | null;
   status: string | null;
-  details: Record<string, string> | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  details: Record<string, any> | null; // libellés de la banque (texte) ; découpage / avances (objets)
   rule_id: number | null;
   source: string;
   tags: TagRef[];
@@ -356,6 +357,8 @@ export interface Recurring {
   next_date: string | null;
   last_date: string | null;
   first_date: string | null;
+  /** Dernière échéance prévue (paiement en plusieurs fois…), null = sans fin. */
+  end_date?: string | null;
   occurrences: number;
   total_cents: number;
   status: "suggere" | "actif" | "ignore" | "termine";
@@ -401,6 +404,16 @@ export interface BudgetsOverview {
   total_projected_cents: number;
   items: BudgetItem[];
   suggestions: { category_id: number; average_cents: number; suggested_cents: number }[];
+  /** Budget sur toutes les dépenses du mois (null : pas de budget global). */
+  global?: {
+    budget_cents: number;
+    spent_cents: number;
+    projected_cents: number;
+    trend_cents: number;
+    pace_cents: number;
+    remaining_cents: number;
+    level: BudgetItem["level"];
+  } | null;
 }
 
 export interface ForecastEventOut {
@@ -459,6 +472,12 @@ export interface ForecastCategory {
   amount_cents: number;
   base_amount_cents: number;
   direction: string;
+  /** Déjà dépensé ce mois-ci dans la catégorie (hors récurrents). */
+  spent_month_cents?: number;
+  /** Vendeurs habituels : montant habituel, passages par semaine, jours préférés (0 = lundi). */
+  habits?: { merchant: string; amount_cents: number; per_week: number; days: number[] }[];
+  /** De temps en temps (coiffeur…) : montant d'une fois, intervalle, prochaine fois attendue ; null = régulière. */
+  occasional?: { amount_cents: number; every_days: number; next_date: string; yearly_cents: number; count: number } | null;
 }
 
 export interface Forecast {
@@ -470,7 +489,18 @@ export interface Forecast {
   end_balance_cents: number;
   baseline_end_cents: number;
   lowest: { date: string; balance_cents: number } | null;
-  totals: { income_cents: number; fixe_cents: number; essentiel_cents: number; plaisir_cents: number; epargne_cents: number };
+  totals: {
+    income_cents: number;
+    fixe_cents: number;
+    essentiel_cents: number;
+    plaisir_cents: number;
+    epargne_cents: number;
+    /** Détail des charges fixes : échéances datées (dont à confirmer, en retard) et estimation sans date fixe. */
+    fixe_scheduled_cents?: number;
+    fixe_unconfirmed_cents?: number;
+    fixe_late_cents?: number;
+    fixe_estimated_cents?: number;
+  };
   income_cents: number;
   fixed_out_cents: number;
   variable_total_cents: number;
@@ -505,6 +535,8 @@ export interface ProjectionMonth {
   net_cents: number;
   end_balance_cents: number;
   baseline_end_cents: number;
+  /** Patrimoine prévu en fin de mois (comptes simulés + le reste, qui reçoit l'épargne et rapporte `rate` %). */
+  net_worth_cents?: number;
 }
 
 export interface Projection {
@@ -516,9 +548,102 @@ export interface Projection {
   baseline_end_cents: number;
   avg_net_cents: number;
   avg_saving_cents: number;
+  net_worth_start_cents?: number;
+  rate?: number;
   lowest: { month: string; balance_cents: number } | null;
   first_negative_month: string | null;
   months: ProjectionMonth[];
   model: ModelView;
   scenario: ScenarioIn & { active: boolean };
+}
+
+// --- Conseils --------------------------------------------------------------------------------------
+
+export interface AdviceScenario {
+  targets?: Record<string, number>;
+  plaisir_pct?: number;
+  extra_saving_cents?: number;
+}
+export interface Advice {
+  id: string;
+  kind: "depense" | "abonnement" | "epargne" | "risque" | "menage";
+  severity: "alerte" | "conseil" | "info";
+  icon: string;
+  title: string;
+  detail: string;
+  gain_monthly_cents: number;
+  action: { type: "scenario"; label: string; scenario: AdviceScenario } | { type: "link"; label: string; to: string } | null;
+}
+export interface AdviceList {
+  items: Advice[];
+  total_gain_cents: number;
+}
+
+// --- Bilan du mois ---------------------------------------------------------------------------------
+
+export interface Recap {
+  month: string;
+  complete: boolean;
+  income_cents: number;
+  spending_cents: number;
+  net_cents: number;
+  saved_cents: number;
+  savings_rate: number | null;
+  previous: { income_cents: number; spending_cents: number };
+  layers: Record<Nature, number>;
+  categories: { category_id: number | null; name: string; amount_cents: number; previous_cents: number; usual_cents: number }[];
+  biggest: { id: number; date: string; label: string; amount_cents: number; category_id: number | null }[];
+  new_merchants: { name: string; amount_cents: number }[];
+  no_spend_days: number;
+  days: number;
+  price_increases: { label: string; from_cents: number; to_cents: number }[];
+  highlights: string[];
+}
+
+// --- Objectifs d'épargne ---------------------------------------------------------------------------
+
+export interface Goal {
+  id: number;
+  name: string;
+  icon: string | null;
+  target_cents: number;
+  target_date: string | null;
+  account_id: number | null;
+  account_name: string | null;
+  priority: number;
+  saved_cents: number;
+  current_cents: number;
+  remaining_cents: number;
+  progress: number;
+  monthly_needed_cents: number | null;
+  monthly_rate_cents: number | null;
+  eta: string | null;
+  status: "atteint" | "en_avance" | "en_retard" | "en_cours";
+}
+
+// --- Découpage et avances ----------------------------------------------------------------------------
+
+export interface SplitPart {
+  id?: number;
+  amount_cents: number;
+  category_id: number | null;
+  note?: string | null;
+  person?: string | null;
+}
+export interface SplitSummary {
+  transaction_id: number;
+  amount_cents: number;
+  split: boolean;
+  parts: SplitPart[];
+}
+export interface AdvanceItem {
+  id: number;
+  date: string;
+  label: string;
+  person: string | null;
+  amount_cents: number;
+  settled: boolean;
+  settled_on: string | null;
+  settled_label: string | null;
+  parent_id: number | null;
 }

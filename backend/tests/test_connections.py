@@ -164,3 +164,46 @@ def test_statement_conversion_without_reference():
     )
     assert len({t.dedup_key for t in st.transactions}) == 2  # deux cafés identiques restent distincts
     assert st.balance_cents == -1250 and st.balance_date == date.today()
+
+
+def test_sync_stale_on_app_open_and_error_kept(auth_client, fake, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from app.db import get_sessionmaker
+    from app.models import Connection
+
+    c = auth_client
+    acc = c.post("/api/accounts", json={"name": "CA", "type": "courant"}).json()
+    c.post("/api/connections/start", json={"aspsp_name": "Banque Test"})
+    c.get("/api/connections/callback", params={"code": "CODE", "state": fake.state}, follow_redirects=False)
+    conn = c.get("/api/connections").json()[0]
+    assert conn["status"] == "actif" and conn["last_error"] is None
+    c.post(f"/api/connections/{conn['id']}/accounts", json={"mapping": {"U1": acc["id"]}})
+
+    # Synchronisée à l'instant : rien à faire à l'ouverture de l'appli.
+    r = c.post("/api/connections/sync-stale").json()
+    assert r["synced"] == [] and r["errors"] == []
+    assert c.post("/api/connections/sync-stale", params={"max_age_minutes": 5}).status_code == 422  # pas plus d'une fois par demi-heure
+
+    def age(hours):
+        with get_sessionmaker()() as db:
+            db.get(Connection, conn["id"]).last_sync_at = datetime.now(timezone.utc) - timedelta(hours=hours)
+            db.commit()
+
+    age(2)
+    r = c.post("/api/connections/sync-stale").json()
+    assert r["synced"] == [conn["label"]] and r["imported"] == 0
+
+    # La banque refuse (quota du jour) : l'erreur est gardée, la connexion reste active, puis effacée au succès suivant.
+    def quota(*_a, **_k):
+        raise eb.EnableBankingError("Too many requests", 429)
+
+    monkeypatch.setattr(fake, "transactions", quota)
+    age(2)
+    r = c.post("/api/connections/sync-stale").json()
+    assert r["synced"] == [] and len(r["errors"]) == 1 and "limite" in r["errors"][0]["error"]
+    conn2 = c.get("/api/connections").json()[0]
+    assert conn2["status"] == "actif" and "limite" in conn2["last_error"]
+    monkeypatch.setattr(fake, "transactions", FakeClient.transactions.__get__(fake))
+    assert c.post(f"/api/connections/{conn['id']}/sync").status_code == 200
+    assert c.get("/api/connections").json()[0]["last_error"] is None

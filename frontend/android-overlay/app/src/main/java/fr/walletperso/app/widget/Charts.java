@@ -22,7 +22,7 @@ final class Charts {
     // Mêmes couleurs que les couches de l'onglet Prévoir.
     static final int LAYER_FIXE = 0xFF2A78D6;
     static final int LAYER_ESSENTIEL = 0xFFEB6834;
-    static final int LAYER_PLAISIR = 0xFF1BAF7A;
+    static final int LAYER_PLAISIR = 0xFFD9468C; // magenta, comme l'appli (--layer-plaisir)
 
     private Charts() {}
 

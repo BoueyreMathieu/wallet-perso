@@ -30,6 +30,16 @@
             android:textStyle="bold" />
 
         <TextView
+            android:id="@+id/widget_hide"
+            android:layout_width="30dp"
+            android:layout_height="26dp"
+            android:contentDescription="Masquer les montants"
+            android:gravity="center"
+            android:text="🙈"
+            android:textSize="14sp"
+            android:visibility="gone" />
+
+        <TextView
             android:id="@+id/widget_refresh"
             android:layout_width="30dp"
             android:layout_height="26dp"

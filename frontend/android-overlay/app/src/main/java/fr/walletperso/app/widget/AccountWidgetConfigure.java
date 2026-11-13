@@ -4,7 +4,9 @@ import android.app.Activity;
 import android.appwidget.AppWidgetManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.util.TypedValue;
 import android.view.View;
@@ -29,6 +31,9 @@ public class AccountWidgetConfigure extends Activity {
     private int widgetId = AppWidgetManager.INVALID_APPWIDGET_ID;
     private TextView hint;
     private ListView list;
+    // Couleurs posées à la main : le thème du système ne s'applique pas toujours à cette fenêtre
+    // (texte blanc sur fond blanc : liste « invisible »).
+    private int bg, text, muted;
 
     private static final class Item {
         final long id;
@@ -53,6 +58,15 @@ public class AccountWidgetConfigure extends Activity {
             return;
         }
 
+        boolean night = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        bg = night ? 0xFF141A2E : 0xFFFFFFFF;
+        text = night ? 0xFFF1F5F9 : 0xFF1E293B;
+        muted = night ? 0xFF94A3B8 : 0xFF64748B;
+        GradientDrawable shape = new GradientDrawable();
+        shape.setColor(bg);
+        shape.setCornerRadius(dp(22));
+        getWindow().setBackgroundDrawable(shape);
+
         int pad = dp(20);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -62,11 +76,13 @@ public class AccountWidgetConfigure extends Activity {
         title.setText("Quel compte afficher ?");
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 19);
         title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(text);
         root.addView(title);
 
         hint = new TextView(this);
         hint.setText("Chargement des comptes…");
         hint.setPadding(0, dp(6), 0, dp(10));
+        hint.setTextColor(muted);
         root.addView(hint);
 
         list = new ListView(this);
@@ -74,6 +90,7 @@ public class AccountWidgetConfigure extends Activity {
 
         Button cancel = new Button(this, null, android.R.attr.borderlessButtonStyle);
         cancel.setText("Annuler");
+        cancel.setTextColor(0xFF7552F5);
         cancel.setOnClickListener(v -> finish());
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.gravity = android.view.Gravity.END;
@@ -113,8 +130,12 @@ public class AccountWidgetConfigure extends Activity {
             public View getView(int position, View convertView, ViewGroup parent) {
                 View v = super.getView(position, convertView, parent);
                 Item it = getItem(position);
-                ((TextView) v.findViewById(android.R.id.text1)).setText(it.name);
-                ((TextView) v.findViewById(android.R.id.text2)).setText(it.detail);
+                TextView t1 = v.findViewById(android.R.id.text1);
+                TextView t2 = v.findViewById(android.R.id.text2);
+                t1.setText(it.name);
+                t1.setTextColor(text);
+                t2.setText(it.detail);
+                t2.setTextColor(muted);
                 return v;
             }
         });
