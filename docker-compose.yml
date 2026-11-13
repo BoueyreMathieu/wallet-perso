@@ -1,3 +1,14 @@
+# Wallet perso : base PostgreSQL, API, interface web et sauvegardes chiffrées.
+# Rien n'est exposé sur le réseau : seule l'interface écoute, et uniquement sur cette machine (127.0.0.1:8080).
+# Tailscale (`tailscale serve`) la rend accessible à tes appareils. Ne JAMAIS remplacer 127.0.0.1:8080 par 8080 :
+# Docker contournerait le pare-feu et publierait l'appli sur toutes les interfaces.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:16-alpine
@@ -11,6 +22,9 @@ services:
       test: ["CMD-SHELL", "pg_isready -U wallet -d wallet"]
       interval: 5s
       retries: 10
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    logging: *logging
     restart: unless-stopped
 
   api:
@@ -18,18 +32,60 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://wallet:${POSTGRES_PASSWORD}@db:5432/wallet
+    volumes:
+      # Clés privées (Enable Banking…), en lecture seule. Le dossier est ignoré par git.
+      - ./secrets:/app/secrets:ro
     depends_on:
       db:
         condition: service_healthy
+    # Durcissement : système de fichiers en lecture seule, aucun privilège Linux, pas d'élévation possible.
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    pids_limit: 200
+    logging: *logging
     restart: unless-stopped
 
   web:
     build: ./frontend
-    # Accessible uniquement depuis ce PC (http://localhost:8080).
+    # Accessible uniquement depuis cette machine (http://localhost:8080), puis par Tailscale.
     ports:
-      - "127.0.0.1:8080:80"
+      - "127.0.0.1:8080:8080"
     depends_on:
       - api
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    pids_limit: 100
+    logging: *logging
+    restart: unless-stopped
+
+  backup:
+    build: ./backup
+    # Pas d'env_file : ce service ne reçoit que ce dont il a besoin (jamais le mot de passe ni la clé de chiffrement).
+    environment:
+      PGHOST: db
+      PGUSER: wallet
+      PGDATABASE: wallet
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:-}
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+      BACKUP_RCLONE_REMOTE: ${BACKUP_RCLONE_REMOTE:-}
+    volumes:
+      # Sauvegardes chiffrées (dossier ignoré par git). Copie hors machine : voir docs/sauvegardes.md.
+      - ./backups:/backups
+      - ./backup/rclone:/config/rclone
+    tmpfs: [/tmp]
+    depends_on:
+      db:
+        condition: service_healthy
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    logging: *logging
     restart: unless-stopped
 
 volumes:

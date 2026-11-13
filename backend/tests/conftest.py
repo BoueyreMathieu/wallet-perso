@@ -1,4 +1,5 @@
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,13 @@ from cryptography.fernet import Fernet
 os.environ["APP_PASSWORD"] = "test-password"
 os.environ["SECRET_KEY"] = "test-secret"
 os.environ["ENCRYPTION_KEY"] = Fernet.generate_key().decode()
-os.environ["DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL", "sqlite:///./test_wallet.db")
+# Dans /tmp : le conteneur de l'API a un système de fichiers en lecture seule (sauf /tmp).
+os.environ["DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL", f"sqlite:///{Path(tempfile.gettempdir()) / 'wallet_test.db'}")
+os.environ["SYNC_INTERVAL_HOURS"] = "0"  # pas de synchro automatique pendant les tests
+os.environ["ENABLE_BANKING_APP_ID"] = ""
+os.environ["SECRETS_DIR"] = "/nonexistent"
+os.environ["COOKIE_SECURE"] = "false"  # le client de test parle en HTTP : un cookie « Secure » ne serait pas renvoyé
+os.environ.pop("APP_PASSWORD_HASH", None)
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
@@ -46,11 +53,14 @@ _USER_TABLES = (
     "DELETE FROM budget",
     "DELETE FROM merchant",
     "DELETE FROM balance_snapshot",
+    "DELETE FROM pending_transaction",
     "DELETE FROM holding",
     "DELETE FROM goal",
     "DELETE FROM account",
     "DELETE FROM connection",
-    "DELETE FROM app_meta WHERE key = 'owner_signatures'",
+    "DELETE FROM device_token",
+    "DELETE FROM security_event",
+    "DELETE FROM app_meta WHERE key IN ('owner_signatures', 'hidden_default_categories', 'category_aliases', 'backup_last_ok', 'backup_last_error')",
 )
 
 
@@ -77,8 +87,16 @@ def client():
         yield c
 
 
+@pytest.fixture(autouse=True)
+def fast_password_failures(monkeypatch):
+    """Pas d'attente d'une seconde après chaque mauvais mot de passe pendant les tests."""
+    monkeypatch.setattr("app.security.time.sleep", lambda _s: None)
+
+
 @pytest.fixture
 def auth_client(client):
     r = client.post("/api/auth/login", json={"password": "test-password"})
     assert r.status_code == 200
+    # Les actions destructrices redemandent le mot de passe : on le joint à toutes les requêtes des tests.
+    client.headers["X-Confirm-Password"] = "test-password"
     return client

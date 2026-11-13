@@ -10,12 +10,14 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Account, Category, ImportBatch
 from app.schemas import UpdatedOut
-from app.security import require_auth
+from app.security import require_auth, require_confirmation
 from app.services import cleanup
 
 router = APIRouter(prefix="/api/data", tags=["données"], dependencies=[Depends(require_auth)])
 
 CONFIRM_WORD = "EFFACER"
+# Actions destructrices : mot de passe redemandé (un cookie ou jeton volé ne suffit pas).
+confirm = [Depends(require_confirmation)]
 
 
 class ImportBatchOut(BaseModel):
@@ -53,7 +55,7 @@ def list_imports(db: Session = Depends(get_db)):
     ]
 
 
-@router.delete("/imports/{batch_id}", response_model=UpdatedOut)
+@router.delete("/imports/{batch_id}", response_model=UpdatedOut, dependencies=confirm)
 def undo_import(batch_id: int, db: Session = Depends(get_db)):
     """Annule un import : supprime les opérations qu'il avait ajoutées."""
     b = db.get(ImportBatch, batch_id)
@@ -71,7 +73,7 @@ def _account(db: Session, account_id: int) -> Account:
     return acc
 
 
-@router.post("/accounts/{account_id}/clear", response_model=UpdatedOut)
+@router.post("/accounts/{account_id}/clear", response_model=UpdatedOut, dependencies=confirm)
 def clear_account(account_id: int, db: Session = Depends(get_db)):
     """Vide un compte (opérations, soldes, imports) en le gardant."""
     n = cleanup.clear_account(db, _account(db, account_id))
@@ -79,7 +81,7 @@ def clear_account(account_id: int, db: Session = Depends(get_db)):
     return UpdatedOut(updated=n)
 
 
-@router.delete("/accounts/{account_id}", response_model=UpdatedOut)
+@router.delete("/accounts/{account_id}", response_model=UpdatedOut, dependencies=confirm)
 def delete_account(account_id: int, db: Session = Depends(get_db)):
     """Supprime définitivement un compte et toutes ses données."""
     n = cleanup.delete_account(db, _account(db, account_id))
@@ -87,7 +89,7 @@ def delete_account(account_id: int, db: Session = Depends(get_db)):
     return UpdatedOut(updated=n)
 
 
-@router.post("/categories/{category_id}/reset", response_model=UpdatedOut)
+@router.post("/categories/{category_id}/reset", response_model=UpdatedOut, dependencies=confirm)
 def reset_category(category_id: int, db: Session = Depends(get_db)):
     if db.get(Category, category_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Catégorie introuvable")
@@ -96,7 +98,7 @@ def reset_category(category_id: int, db: Session = Depends(get_db)):
     return UpdatedOut(updated=n)
 
 
-@router.post("/reset-categorization", response_model=UpdatedOut)
+@router.post("/reset-categorization", response_model=UpdatedOut, dependencies=confirm)
 def reset_all_categorization(db: Session = Depends(get_db)):
     """Oublie toutes tes catégorisations (vendeurs et corrections) ; les règles par défaut restent."""
     n = cleanup.reset_all_categorization(db)
@@ -104,7 +106,7 @@ def reset_all_categorization(db: Session = Depends(get_db)):
     return UpdatedOut(updated=n)
 
 
-@router.post("/wipe", response_model=UpdatedOut)
+@router.post("/wipe", response_model=UpdatedOut, dependencies=confirm)
 def wipe(body: WipeIn, db: Session = Depends(get_db)):
     if body.confirm != CONFIRM_WORD:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Tape {CONFIRM_WORD} pour confirmer")

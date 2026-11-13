@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_account_name">Solde d\'un compte</string>
+    <string name="widget_account_desc">Le solde du compte de ton choix, ses mouvements du mois et ses dernières opérations.</string>
+    <string name="widget_monthend_name">Fin du mois</string>
+    <string name="widget_monthend_desc">Solde prévu en fin de mois, point bas et courbe (même calcul que Prévoir).</string>
+    <string name="widget_spent_name">Ce mois-ci</string>
+    <string name="widget_spent_desc">Dépensé ce mois, comparé au mois dernier, avec charges fixes, essentiels et plaisirs.</string>
+    <string name="widget_budgets_name">Budgets</string>
+    <string name="widget_budgets_desc">Budgets du mois : en alerte, dépassés, barres de progression.</string>
+    <string name="widget_upcoming_name">À venir</string>
+    <string name="widget_upcoming_desc">Prochains prélèvements et revenus attendus.</string>
+    <string name="widget_balances_name">Patrimoine</string>
+    <string name="widget_balances_desc">Patrimoine net, variation du mois et soldes des comptes.</string>
+    <string name="widget_recent_name">Dernières opérations</string>
+    <string name="widget_recent_desc">Dernières opérations de tous les comptes et nombre à catégoriser.</string>
+    <string name="widget_quickadd_name">Ajout rapide</string>
+    <string name="widget_quickadd_desc">Un bouton + pour saisir une dépense en un geste.</string>
+</resources>

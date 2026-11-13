@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { MerchantStats, Service, Share, Transaction, api } from "../api";
 import { ServiceForm } from "../components/ServiceForm";
+import { SimilarMerchants } from "../components/SimilarMerchants";
 import { CategoryBadge, CategorySelect, useCategories } from "../components/categories";
 import { TagChip, TagPicker, useTags } from "../components/tags";
 import { PERIODS, PeriodKey, formatCents, formatDate, periodRange } from "../format";
@@ -64,7 +65,8 @@ export default function Merchants() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Vendeurs</h1>
+      <h1 className="text-2xl font-bold">Vendeurs</h1>
+      <SimilarMerchants onChanged={load} />
 
       <div className="card grid gap-2 sm:grid-cols-4">
         <select className="input" value={period} onChange={(e) => setPeriod(e.target.value as PeriodKey)}>
@@ -131,7 +133,7 @@ export default function Merchants() {
                   </div>
                 )}
               </button>
-              <div className="flex items-center gap-2 sm:w-80">
+              <div className="flex min-w-0 items-center gap-2 sm:w-80 sm:shrink-0">
                 <CategorySelect className="input" value={m.category_id} onChange={(id) => setCategory(m, id)} emptyLabel="— Catégorie générale —" />
                 <span className="w-24 shrink-0 text-right font-semibold tabular-nums">{formatCents(m.spent_cents)}</span>
               </div>

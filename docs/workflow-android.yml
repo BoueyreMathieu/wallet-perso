@@ -1,0 +1,54 @@
+# Construit l'APK Android (debug) à chaque push qui touche l'interface, ou à la demande (onglet Actions).
+# L'APK est téléchargeable dans le résumé de l'exécution (« Artifacts » → wallet-perso-apk).
+name: Appli Android
+
+on:
+  push:
+    branches: [main]
+    paths: ["frontend/**", ".github/workflows/android.yml"]
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    env:
+      KEYSTORE: ${{ secrets.ANDROID_DEBUG_KEYSTORE }}
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # Même signature que tes builds locaux (sinon Android refuse d'installer la mise à jour par-dessus) :
+      # secret ANDROID_DEBUG_KEYSTORE = ton fichier %USERPROFILE%\.android\debug.keystore encodé en base64.
+      - name: Clé de signature (facultatif)
+        if: env.KEYSTORE != ''
+        run: |
+          mkdir -p ~/.android
+          echo "$KEYSTORE" | base64 -d > ~/.android/debug.keystore
+
+      - name: Interface + projet Android
+        run: |
+          npm install
+          npm run android:prepare
+
+      - name: APK
+        working-directory: frontend/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wallet-perso-apk
+          path: frontend/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30

@@ -17,7 +17,7 @@ export default function Accounts() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Comptes</h1>
+        <h1 className="text-2xl font-bold">Comptes</h1>
         <button className="btn" onClick={() => setShowForm((v) => !v)}>
           {showForm ? "Annuler" : "Ajouter un compte"}
         </button>
@@ -137,6 +137,11 @@ function AccountRow({ account: a, onChange }: { account: Account; onChange: () =
             {a.balance_cents === null ? "—" : formatCents(a.balance_cents)}
           </p>
           {a.balance_date && <p className="text-xs text-slate-500">au {formatDate(a.balance_date)}</p>}
+          {a.pending_count > 0 && (
+            <p className="text-xs text-amber-700 dark:text-amber-300">
+              ⏳ {formatCents(a.pending_cents)} à venir ({a.pending_count}) · prévu {formatCents((a.balance_cents ?? 0) + a.pending_cents)}
+            </p>
+          )}
         </div>
       </div>
 

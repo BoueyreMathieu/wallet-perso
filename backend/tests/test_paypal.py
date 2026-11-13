@@ -148,3 +148,38 @@ def test_ambiguous_match_is_not_guessed(auth_client, accounts):
     _upload(auth_client, "paypal", make_paypal(rows), pay["id"])
     res = _upload(auth_client, "credit-agricole", make_csv(CA_ROWS, number="77770000333"), ca["id"]).json()
     assert res["reconciled"] == 0
+
+
+def test_synced_paypal_purchase_reconciled_directly(auth_client, accounts):
+    """Synchro Enable Banking : PayPal ne donne que les achats (pas d'approvisionnement)."""
+    from app.connectors.enable_banking import to_statement
+    from app.db import get_sessionmaker
+    from app.services.importing import ingest
+
+    ca, pay = accounts
+    cats = {c["name"]: c["id"] for c in auth_client.get("/api/categories").json()}
+    _upload(auth_client, "credit-agricole", make_csv(CA_ROWS, number="77770000444"), ca["id"])
+    synced = [
+        {"entry_reference": "9A1", "status": "BOOK", "credit_debit_indicator": "DBIT", "transaction_date": "2026-11-01",
+         "transaction_amount": {"amount": "12.30", "currency": "EUR"}, "creditor": {"name": "Pizza Roma"}, "remittance_information": []},
+        {"entry_reference": "9A2", "status": "BOOK", "credit_debit_indicator": "DBIT", "transaction_date": "2026-11-02",
+         "transaction_amount": {"amount": "5.00", "currency": "EUR"}, "creditor": {"name": "Ciné Club"}, "remittance_information": []},
+    ]
+    with get_sessionmaker()() as db:
+        res = ingest(db, to_statement(synced, [], "PayPal"), pay["id"], None, "PayPal")
+        db.commit()
+    assert res.reconciled == 1
+
+    bank = next(t for t in _tx(auth_client, account_id=ca["id"]) if t["amount_cents"] == -1230)
+    assert bank["merchant"] == "Pizza Roma" and bank["category_id"] == cats["Restaurants"]
+    assert bank["details"]["via"] == "PayPal" and bank["details"]["vendeur"] == "Pizza Roma"
+    items = {t["details"]["transaction"]: t for t in _tx(auth_client, account_id=pay["id"])}
+    assert items["9A1"]["linked_id"] == bank["id"] and items["9A1"]["counted"] is False
+    assert items["9A2"]["counted"] is True  # sans prélèvement bancaire : payé avec le solde PayPal
+
+    # Dissocier : l'achat recompte et n'est pas re-rapproché automatiquement.
+    auth_client.post(f"/api/transactions/{bank['id']}/unlink")
+    with get_sessionmaker()() as db:
+        from app.services.reconcile import reconcile_paypal
+
+        assert reconcile_paypal(db) == 0

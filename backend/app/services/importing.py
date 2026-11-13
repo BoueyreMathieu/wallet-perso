@@ -4,18 +4,21 @@ Statement (format commun) → compte → doublons / mises à jour → marchands 
 → rapprochements entre comptes.
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.connectors.base import Statement
 from app.importers import credit_agricole as ca
 from app.importers import paypal as pp
-from app.models import Account, BalanceSnapshot, Category, ImportBatch, Merchant, Transaction, utcnow
+from app.models import Account, BalanceSnapshot, Category, ImportBatch, Merchant, PendingTransaction, Transaction, utcnow
 from app.seed import category_paths
 from app.services.categorizing import Categorizer, remember_owner
+from app.services.merchant_merge import auto_merge
+from app.services.merchant_resolver import MerchantResolver
 from app.services.reconcile import reconcile_paypal
 
 
@@ -74,6 +77,36 @@ def known_merchant_aliases(db: Session) -> dict[str, str]:
 
 
 MANUAL_MATCH_DAYS = 3
+CROSS_SOURCE_DAYS = 2
+
+
+def _family(source: str) -> str:
+    """Les anciens imports CA portent la source « csv »."""
+    return "csv_credit_agricole" if source == "csv" else source
+
+
+class _OtherSourceIndex:
+    """Opérations du compte venues d'une AUTRE source (ex. CSV quand on reçoit la synchro).
+    Une opération entrante de même montant, à la même date (ou à ±2 jours à défaut), est considérée
+    comme déjà connue. Chaque opération existante ne peut être « réclamée » qu'une fois, ce qui gère
+    correctement deux achats identiques le même jour."""
+
+    def __init__(self, txns: list[Transaction]):
+        self.by_amount: dict[int, list[Transaction]] = {}
+        for t in txns:
+            self.by_amount.setdefault(t.amount_cents, []).append(t)
+        self.claimed: set[int] = set()
+
+    def claim(self, day, amount: int, exact_only: bool) -> Transaction | None:
+        cands = [t for t in self.by_amount.get(amount, []) if t.id not in self.claimed]
+        near = [t for t in cands if t.booked_at == day] if exact_only else [
+            t for t in cands if abs((t.booked_at - day).days) <= CROSS_SOURCE_DAYS
+        ]
+        if not near:
+            return None
+        t = min(near, key=lambda x: (abs((x.booked_at - day).days), x.id))
+        self.claimed.add(t.id)
+        return t
 
 
 def merge_manual_entries(db: Session, account_id: int, imported: list[Transaction]) -> int:
@@ -107,6 +140,17 @@ def merge_manual_entries(db: Session, account_id: int, imported: list[Transactio
     return merged
 
 
+def _refresh_recurring(db: Session) -> None:
+    """Abonnements / récurrents mis à jour après chaque import ; une erreur ici ne doit jamais bloquer l'import."""
+    from app.services.recurring import refresh  # import local : évite un cycle
+
+    try:
+        with db.begin_nested():
+            refresh(db)
+    except Exception:  # noqa: BLE001
+        logging.getLogger("wallet.recurrents").exception("Détection des récurrents impossible")
+
+
 def ingest(
     db: Session,
     stmt: Statement,
@@ -123,28 +167,32 @@ def ingest(
     acc.institution = acc.institution or institution
     remember_owner(db, stmt.holder)
 
-    merchants = {m.name: m for m in db.scalars(select(Merchant))}
-
-    def merchant_for(name: str | None) -> Merchant | None:
-        if not name:
-            return None
-        name = name.strip()[:150]
-        m = merchants.get(name)
-        if m is None:
-            m = Merchant(name=name, aliases=[])
-            db.add(m)
-            merchants[name] = m
-        return m
+    # Libellé générique nettoyé, nom connu, nom à une troncature près, sinon nouveau vendeur.
+    merchant_for = MerchantResolver(db)
 
     for key, name in stmt.merchant_aliases.items():
         m = merchant_for(name)
         if m is not None and key not in (m.aliases or []):
             m.aliases = [*(m.aliases or []), key]  # nouvelle liste : SQLAlchemy détecte le changement
 
-    existing = {
-        t.dedup_hash: t
-        for t in db.scalars(select(Transaction).where(Transaction.account_id == acc.id))
-    }
+    account_txns = list(db.scalars(select(Transaction).where(Transaction.account_id == acc.id)))
+    existing: dict[str, Transaction] = {}
+    for t in account_txns:
+        existing[t.dedup_hash] = t
+        for key in (t.details or {}).get("alt_keys", []):
+            existing[key] = t  # même opération déjà reçue par une autre source (CSV ↔ synchro)
+    other_sources = _OtherSourceIndex(
+        [t for t in account_txns if _family(t.source) not in (_family(stmt.source), "manuel")]
+    )
+    # Deux passes : d'abord les correspondances à la même date, puis à ±2 jours.
+    twins: dict[int, Transaction] = {}
+    unknown = [(i, raw) for i, raw in enumerate(stmt.transactions) if raw.dedup_key not in existing]
+    for exact in (True, False):
+        for i, raw in unknown:
+            if i not in twins:
+                twin = other_sources.claim(raw.booked_at, raw.amount_cents, exact)
+                if twin is not None:
+                    twins[i] = twin
     paths = category_paths(db)
     kinds = dict(db.execute(select(Category.id, Category.kind)).all())
     batch = ImportBatch(source=stmt.source, filename=filename, account_id=acc.id, rows_total=len(stmt.transactions))
@@ -153,7 +201,7 @@ def ingest(
 
     new: list[Transaction] = []
     updated = 0
-    for raw in stmt.transactions:
+    for i, raw in enumerate(stmt.transactions):
         old = existing.get(raw.dedup_key)
         if old is not None:
             # Même opération déjà connue : on met à jour ce qui peut évoluer (statut « en attente » → « terminé »).
@@ -161,6 +209,12 @@ def ingest(
                 old.status = raw.status
                 old.amount_cents = raw.amount_cents
                 updated += 1
+            continue
+        twin = twins.get(i)
+        if twin is not None:
+            # Déjà importée par une autre source (ex. export CSV puis synchro) : on retient juste sa clé.
+            twin.details = {**(twin.details or {}), "alt_keys": [*(twin.details or {}).get("alt_keys", []), raw.dedup_key]}
+            existing[raw.dedup_key] = twin
             continue
         t = Transaction(
             account_id=acc.id,
@@ -200,10 +254,18 @@ def ingest(
         else:
             db.add(BalanceSnapshot(account_id=acc.id, date=stmt.balance_date, balance_cents=stmt.balance_cents))
 
+    if stmt.has_pending:
+        replace_pending(db, acc.id, stmt, existing, merchant_for)
+
     batch.rows_imported = len(new)
     batch.rows_skipped = len(stmt.transactions) - len(new)
     db.flush()
     reconciled = reconcile_paypal(db)
+    from app.services.transfers import detect as detect_transfers  # import local : évite un cycle
+
+    detect_transfers(db)
+    auto_merge(db)  # vendeurs « sûrement » identiques créés par cet import
+    _refresh_recurring(db)
     db.commit()
 
     period = stmt.period
@@ -222,6 +284,31 @@ def ingest(
         balance_cents=stmt.balance_cents,
         balance_date=stmt.balance_date,
     )
+
+
+def replace_pending(db: Session, account_id: int, stmt: Statement, known: dict, resolver: MerchantResolver) -> int:
+    """Opérations « à venir » du compte : la liste reçue remplace la précédente (hors statistiques)."""
+    from app.categorize import find_category
+    from app.seed import INTERNAL_TRANSFER_PATH
+    from app.services.categorizing import get_owner_signatures, load_rules
+
+    db.execute(delete(PendingTransaction).where(PendingTransaction.account_id == account_id))
+    rules, signatures = load_rules(db), get_owner_signatures(db)
+    internal = category_paths(db).get(INTERNAL_TRANSFER_PATH)
+    kept = 0
+    for raw in stmt.pending:
+        if raw.dedup_key in known:
+            continue  # déjà comptabilisée (certaines banques la renvoient encore un temps « à venir »)
+        name = resolver.lookup(raw.merchant_hint)
+        cat_id, _ = find_category(rules, raw.raw_label, name, signatures, internal, raw.amount_cents)
+        db.add(
+            PendingTransaction(
+                account_id=account_id, booked_at=raw.booked_at, amount_cents=raw.amount_cents,
+                raw_label=raw.raw_label[:500], merchant=name, category_id=cat_id,
+            )
+        )
+        kept += 1
+    return kept
 
 
 def import_credit_agricole(db: Session, raw: bytes, filename: str | None, account_id: int | None) -> ImportResult:

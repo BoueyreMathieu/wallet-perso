@@ -42,6 +42,10 @@ class Statement:
     transactions: list[RawTransaction] = field(default_factory=list)
     # Alias de marchands appris pendant la lecture (clé → nom), à mémoriser en base.
     merchant_aliases: dict[str, str] = field(default_factory=dict)
+    # Opérations « à venir » (pas encore comptabilisées). has_pending = la source sait en fournir :
+    # la liste remplace alors celle déjà connue pour le compte (un export CSV n'y touche pas).
+    pending: list[RawTransaction] = field(default_factory=list)
+    has_pending: bool = False
 
     @property
     def period(self) -> tuple[date, date] | None:

@@ -1,4 +1,3 @@
-import re
 from collections import Counter, defaultdict
 from datetime import date
 
@@ -8,11 +7,13 @@ from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.regex_safety import check_regex
 from app.models import Category, Merchant, Rule, Tag, Transaction, merchant_tag, rule_tag
 from app.schemas import CategoryAssign, ServiceIn, ServiceOut, ServicePatch, TagIds, UpdatedOut
 from app.security import require_auth
 from app.services.categorizing import recategorize, set_merchant_category
 from app.services.cleanup import merge_merchants, rename_merchant, reset_merchant
+from app.services import merchant_merge
 from app.services.services import save_service
 
 router = APIRouter(prefix="/api", tags=["vendeurs"], dependencies=[Depends(require_auth)])
@@ -189,6 +190,59 @@ def rename(merchant_id: int, body: MerchantRename, db: Session = Depends(get_db)
     return {"id": m.id, "name": m.name, "merged": m.id != merchant_id}
 
 
+class SimilarMerchant(BaseModel):
+    id: int
+    name: str
+    count: int
+
+
+class SimilarGroup(BaseModel):
+    merchants: list[SimilarMerchant]
+    proposed_id: int
+
+
+class GroupMerge(BaseModel):
+    ids: list[int] = Field(min_length=2)
+    target_id: int
+    name: str | None = Field(default=None, max_length=150)
+
+
+class GroupIgnore(BaseModel):
+    ids: list[int] = Field(min_length=2)
+
+
+@router.get("/merchants/similar", response_model=list[SimilarGroup])
+def similar_merchants(db: Session = Depends(get_db)):
+    """Vendeurs probablement identiques (même début de nom), à confirmer."""
+    return merchant_merge.suggestions(db)
+
+
+@router.post("/merchants/auto-merge", response_model=UpdatedOut)
+def auto_merge(db: Session = Depends(get_db)):
+    """Fusionne tout de suite les vendeurs sûrement identiques (troncature / référence près)."""
+    n = merchant_merge.auto_merge(db)
+    db.commit()
+    return UpdatedOut(updated=n)
+
+
+@router.post("/merchants/merge-group", response_model=UpdatedOut)
+def merge_group(body: GroupMerge, db: Session = Depends(get_db)):
+    if body.target_id not in body.ids:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Le vendeur gardé doit faire partie de la sélection")
+    group = [_get(db, i) for i in dict.fromkeys(body.ids)]
+    moved = merchant_merge.merge_group(db, group, _get(db, body.target_id), body.name)
+    db.commit()
+    return UpdatedOut(updated=moved)
+
+
+@router.post("/merchants/similar/ignore", response_model=UpdatedOut)
+def ignore_similar(body: GroupIgnore, db: Session = Depends(get_db)):
+    """« Ce ne sont pas les mêmes » : la suggestion ne revient plus."""
+    merchant_merge.ignore(db, body.ids)
+    db.commit()
+    return UpdatedOut(updated=len(body.ids))
+
+
 @router.post("/merchants/{merchant_id}/merge", response_model=UpdatedOut)
 def merge(merchant_id: int, body: MerchantMerge, db: Session = Depends(get_db)):
     if body.into_id == merchant_id:
@@ -225,10 +279,9 @@ def _check_service(db: Session, data: dict) -> None:
     if lo is not None and hi is not None and lo > hi:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Montant minimum supérieur au maximum")
     if data.get("match_type") == "regex":
-        try:
-            re.compile(data.get("pattern") or "")
-        except re.error as e:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Expression régulière invalide : {e}") from e
+        problem = check_regex(data.get("pattern") or "")
+        if problem:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, problem)
 
 
 @router.get("/merchants/{merchant_id}/services", response_model=list[ServiceOut])

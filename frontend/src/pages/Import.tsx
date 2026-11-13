@@ -47,7 +47,7 @@ export default function Import() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Importer des opérations</h1>
+      <h2 className="text-lg font-semibold">Importer des opérations</h2>
 
       <form onSubmit={submit} className="card space-y-3">
         <label className="block space-y-1 text-sm">

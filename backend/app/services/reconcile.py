@@ -9,6 +9,8 @@ Après rapprochement :
   - la ligne bancaire devient la vraie dépense : vendeur, catégorie et infos de l'achat ;
   - l'achat PayPal reste visible mais n'est plus compté (sinon double comptage) ;
   - l'approvisionnement est un transfert, non compté.
+Avec la synchro Enable Banking, PayPal ne fournit que les achats (pas les approvisionnements) :
+le prélèvement bancaire −X est alors rapproché directement de l'achat PayPal −X (dates proches).
 En cas de doute (plusieurs candidats aussi proches), on ne devine pas : rien n'est rapproché.
 """
 
@@ -32,15 +34,16 @@ def _is_paypal_debit(t: Transaction) -> bool:
     return name.lower() == "paypal" or "paypal" in t.raw_label.lower()
 
 
-def link(bank: Transaction, funding: Transaction, purchase: Transaction | None) -> None:
-    bank.transfer_pair_id, funding.transfer_pair_id = funding.id, bank.id
+def link(bank: Transaction, funding: Transaction | None, purchase: Transaction | None) -> None:
+    if funding is not None:
+        bank.transfer_pair_id, funding.transfer_pair_id = funding.id, bank.id
     info = {"via": "PayPal"}
     if purchase is not None:
         bank.linked_id, purchase.linked_id = purchase.id, bank.id
         pd = purchase.details or {}
         info.update(
             {
-                "vendeur": pd.get("vendeur"),
+                "vendeur": pd.get("vendeur") or (purchase.merchant.name if purchase.merchant else None),
                 "objet": pd.get("objet"),
                 "paypal_transaction": pd.get("transaction"),
                 "match_text": purchase.raw_label,
@@ -65,12 +68,17 @@ def reconcile_paypal(db: Session) -> int:
         t for t in paypal_rows
         if (t.details or {}).get("role") == "approvisionnement" and t.transfer_pair_id is None
     ]
-    if not fundings:
+    # Achats venant de la synchro (sans rôle) : rapprochement direct avec le prélèvement bancaire.
+    direct = [
+        t for t in paypal_rows
+        if t.amount_cents < 0 and not (t.details or {}).get("role") and t.linked_id is None and not (t.details or {}).get("no_link")
+    ]
+    if not fundings and not direct:
         return 0
     purchases = {(t.details or {}).get("transaction"): t for t in paypal_rows if (t.details or {}).get("role") == "achat"}
     bank_rows = [
         t for t in db.scalars(load.where(Account.type != "paypal", Transaction.transfer_pair_id.is_(None)))
-        if _is_paypal_debit(t)
+        if _is_paypal_debit(t) and t.linked_id is None
     ]
 
     # Candidats : même montant (signes opposés), approvisionnement dans la fenêtre de dates.
@@ -100,6 +108,25 @@ def reconcile_paypal(db: Session) -> int:
         linked.append(by_id[bid])
         if purchase is not None:
             linked.append(purchase)
+
+    # 2e passe : prélèvements restants ↔ achats PayPal synchronisés (même montant, dates proches).
+    done = {t.id for t in linked}
+    rest = [b for b in bank_rows if b.id not in done]
+    direct_options: dict[int, list[tuple[int, Transaction]]] = {}
+    for b in rest:
+        lo, hi = b.booked_at - timedelta(days=DAYS_BEFORE), b.booked_at + timedelta(days=DAYS_AFTER)
+        cands = [(abs((b.booked_at - p.booked_at).days), p) for p in direct if p.amount_cents == b.amount_cents and lo <= p.booked_at <= hi]
+        if cands:
+            direct_options[b.id] = sorted(cands, key=lambda c: (c[0], c[1].id))
+    used: set[int] = set()
+    for bid in sorted(direct_options, key=lambda i: (direct_options[i][0][0], i)):
+        free = [(d, p) for d, p in direct_options[bid] if p.id not in used]
+        if not free or (len(free) > 1 and free[0][0] == free[1][0]):
+            continue
+        purchase = free[0][1]
+        link(by_id[bid], None, purchase)
+        used.add(purchase.id)
+        linked.extend([by_id[bid], purchase])
 
     if linked:
         db.flush()
@@ -139,6 +166,8 @@ def unlink(db: Session, t: Transaction) -> None:
         funding.transfer_pair_id = None
     if purchase is not None:
         purchase.linked_id, purchase.counted = None, True
+        if funding is None:  # achat synchronisé rapproché directement : ne pas le re-rapprocher
+            purchase.details = {**(purchase.details or {}), "no_link": True}
     db.flush()
     db.expire(bank, ["merchant"])
     Categorizer(db).apply([x for x in (bank, purchase) if x is not None])

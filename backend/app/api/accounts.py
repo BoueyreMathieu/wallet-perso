@@ -1,11 +1,11 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.db import get_db
-from app.models import Account, BalanceSnapshot, utcnow
+from app.models import Account, BalanceSnapshot, PendingTransaction, utcnow
 from app.schemas import AccountIn, AccountOut, AccountPatch, BalanceIn, NetWorthOut
 from app.security import require_auth
 from app.services.balances import current_balance
@@ -15,6 +15,11 @@ router = APIRouter(prefix="/api/accounts", tags=["comptes"], dependencies=[Depen
 
 def _to_out(db: Session, acc: Account) -> AccountOut:
     balance, balance_date = current_balance(db, acc.id)
+    p_sum, p_count = db.execute(
+        select(func.coalesce(func.sum(PendingTransaction.amount_cents), 0), func.count(PendingTransaction.id)).where(
+            PendingTransaction.account_id == acc.id
+        )
+    ).one()
     return AccountOut(
         id=acc.id,
         name=acc.name,
@@ -26,6 +31,8 @@ def _to_out(db: Session, acc: Account) -> AccountOut:
         provider=acc.connection.provider if acc.connection else "manuel",
         balance_cents=balance,
         balance_date=balance_date,
+        pending_cents=int(p_sum or 0),
+        pending_count=int(p_count or 0),
     )
 
 

@@ -52,8 +52,8 @@ class Categorizer:
     def apply(self, txns: Iterable[Transaction]) -> int:
         changed = 0
         for t in txns:
-            if t.category_locked:
-                continue
+            if t.category_locked or (t.details or {}).get("virement_interne"):
+                continue  # choix manuel, ou virement entre mes comptes (géré par services/transfers)
             # Une opération rapprochée (ex. prélèvement CA payé via PayPal) est catégorisée
             # d'après l'achat réel, pas d'après le libellé « PayPal » de la banque.
             text = (t.details or {}).get("match_text") or t.raw_label

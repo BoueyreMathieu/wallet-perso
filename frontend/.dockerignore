@@ -1,2 +1,7 @@
 node_modules
 dist
+android
+android-overlay
+keystore.properties
+*.jks
+*.keystore

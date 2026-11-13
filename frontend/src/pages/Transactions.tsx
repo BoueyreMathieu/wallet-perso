@@ -1,26 +1,44 @@
 import { useCallback, useEffect, useState } from "react";
-import { Account, MerchantGroup, ServiceSuggestion, Transaction, api } from "../api";
+import { Link, useLocation } from "react-router-dom";
+import { Account, FREQUENCY_LABELS, Frequency, MerchantGroup, Pending, ServiceSuggestion, Transaction, api } from "../api";
 import { ManualForm } from "../components/ManualForm";
 import { ServiceDraft, ServiceForm } from "../components/ServiceForm";
-import { CategoryBadge, CategorySelect } from "../components/categories";
+import { CategoryBadge, CategoryIcon, CategorySelect } from "../components/categories";
 import { TagChip, TagPicker, TagSelect } from "../components/tags";
 import { formatCents, formatDate } from "../format";
 
 const PAGE = 100;
 
+// Filtres de départ lus dans l'adresse (liens depuis l'accueil : ?categorie=…&du=…&au=…, ?a_categoriser=1).
+const initial = () => new URLSearchParams(window.location.search);
+
 export default function Transactions() {
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [accountId, setAccountId] = useState("");
-  const [categoryId, setCategoryId] = useState<number | null>(null);
+  const [accountId, setAccountId] = useState(() => initial().get("compte") ?? "");
+  const [categoryId, setCategoryId] = useState<number | null>(() => {
+    const v = initial().get("categorie");
+    return v ? Number(v) : null;
+  });
   const [tagId, setTagId] = useState<number | null>(null);
-  const [onlyUncategorized, setOnlyUncategorized] = useState(false);
+  const [onlyUncategorized, setOnlyUncategorized] = useState(() => initial().get("a_categoriser") === "1");
+  const [range, setRange] = useState<[string, string] | null>(() => {
+    const p = initial();
+    return p.get("du") && p.get("au") ? [p.get("du")!, p.get("au")!] : null;
+  });
   const [q, setQ] = useState("");
   const [items, setItems] = useState<Transaction[]>([]);
   const [total, setTotal] = useState(0);
   const [groups, setGroups] = useState<MerchantGroup[]>([]);
   const [editing, setEditing] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(() => initial().get("nouvelle") === "1");
+  const location = useLocation();
+  // Lien ouvert alors que la page est déjà affichée (widget « ajout rapide », lien de l'accueil…).
+  useEffect(() => {
+    const p = new URLSearchParams(location.search);
+    if (p.get("nouvelle") === "1") setCreating(true);
+    if (p.get("a_categoriser") === "1") setOnlyUncategorized(true);
+  }, [location.key]); // eslint-disable-line react-hooks/exhaustive-deps
   const [openGroup, setOpenGroup] = useState<string | null>(null);
 
   useEffect(() => {
@@ -35,11 +53,15 @@ export default function Transactions() {
       if (tagId !== null) params.set("tag_id", String(tagId));
       if (onlyUncategorized) params.set("uncategorized", "true");
       if (q.trim()) params.set("q", q.trim());
+      if (range) {
+        params.set("date_from", range[0]);
+        params.set("date_to", range[1]);
+      }
       const page = await api.get<{ items: Transaction[]; total: number }>(`/transactions?${params}`);
       setItems((prev) => (offset === 0 ? page.items : [...prev, ...page.items]));
       setTotal(page.total);
     },
-    [accountId, categoryId, tagId, onlyUncategorized, q],
+    [accountId, categoryId, tagId, onlyUncategorized, q, range],
   );
 
   const loadGroups = () => api.get<MerchantGroup[]>("/transactions/to-categorize").then(setGroups);
@@ -51,7 +73,10 @@ export default function Transactions() {
   useEffect(() => {
     loadGroups();
   }, []);
-  useEffect(() => setSelected(new Set()), [accountId, categoryId, tagId, onlyUncategorized, q]);
+  useEffect(() => setSelected(new Set()), [accountId, categoryId, tagId, onlyUncategorized, q, range]);
+  useEffect(() => {
+    if (window.location.search) window.history.replaceState(null, "", "/operations");
+  }, []);
 
   const refresh = () => {
     load(0);
@@ -90,7 +115,7 @@ export default function Transactions() {
   return (
     <div className={`space-y-4 ${selected.size ? "pb-40 sm:pb-24" : ""}`}>
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Opérations</h1>
+        <h1 className="text-2xl font-bold">Opérations</h1>
         {!creating && (
           <button className="btn" onClick={() => setCreating(true)}>+ Nouvelle opération</button>
         )}
@@ -165,7 +190,17 @@ export default function Transactions() {
           <input type="checkbox" checked={onlyUncategorized} onChange={(e) => setOnlyUncategorized(e.target.checked)} />
           Seulement les opérations à catégoriser
         </label>
+        {range && (
+          <p className="flex items-center gap-2 text-sm sm:col-span-4">
+            <span className="chip bg-accent-100 text-accent-800 dark:bg-accent-500/20 dark:text-accent-200">
+              📅 du {formatDate(range[0])} au {formatDate(range[1])}
+              <button className="ml-1" onClick={() => setRange(null)} aria-label="Retirer la période">✕</button>
+            </span>
+          </p>
+        )}
       </div>
+
+      <PendingList accountId={accountId ? Number(accountId) : null} />
 
       <div className="flex items-center justify-between text-sm text-slate-500">
         <label className="flex items-center gap-2">
@@ -177,19 +212,29 @@ export default function Transactions() {
 
       <ul className="card divide-y divide-slate-100 p-0 dark:divide-slate-800">
         {items.map((t) => (
-          <li key={t.id} className={`px-4 py-3 ${t.counted ? "" : "opacity-60"} ${selected.has(t.id) ? "bg-sky-50 dark:bg-sky-950/40" : ""}`}>
+          <li key={t.id} className={`px-4 py-3 ${t.counted ? "" : "opacity-60"} ${selected.has(t.id) ? "bg-accent-50 dark:bg-accent-500/10" : ""}`}>
             <div className="flex items-start gap-3">
-              <input type="checkbox" className="mt-1" checked={selected.has(t.id)} onChange={() => toggle(t.id)} aria-label="Sélectionner" />
+              <input type="checkbox" className="mt-2.5" checked={selected.has(t.id)} onChange={() => toggle(t.id)} aria-label="Sélectionner" />
+              <span className="hidden sm:block">
+                <CategoryIcon id={t.category_id} />
+              </span>
               <button className="min-w-0 flex-1 text-left" onClick={() => setEditing(editing === t.id ? null : t.id)}>
                 <p className="truncate font-medium">{t.label}</p>
                 <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
                   <span>{formatDate(t.booked_at)}</span>
                   <span>· {t.account_name}</span>
                   <CategoryBadge id={t.category_id} />
-                  {t.is_transfer && <span>· transfert</span>}
+                  {t.pair_account ? (
+                    <span className="chip bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200">
+                      ↔ {t.amount_cents < 0 ? "vers" : "depuis"} {t.pair_account}
+                    </span>
+                  ) : (
+                    t.is_transfer && <span>· transfert</span>
+                  )}
                   {t.details?.via && <span className="rounded bg-sky-100 px-1 text-sky-700 dark:bg-sky-900 dark:text-sky-200">via {t.details.via}</span>}
                   {!t.counted && <span>· non compté</span>}
                   {t.status === "en attente" && <span>· en attente</span>}
+                  {t.recurring_id !== null && <span className="chip bg-violet-100 text-violet-700 dark:bg-violet-500/20 dark:text-violet-200">🔁 récurrent</span>}
                   {t.tags.map((tg) => (
                     <TagChip key={tg.id} name={tg.name} color={tg.color} source={tg.source} />
                   ))}
@@ -213,6 +258,7 @@ export default function Transactions() {
       {selected.size > 0 && (
         <BulkBar
           ids={[...selected]}
+          items={items.filter((t) => selected.has(t.id))}
           onDone={() => {
             refresh();
           }}
@@ -270,10 +316,23 @@ function GroupDetail({ merchantId, onChanged }: { merchantId: number | null; onC
   );
 }
 
-function BulkBar({ ids, onDone, onClear }: { ids: number[]; onDone: () => void; onClear: () => void }) {
+function BulkBar({ ids, items, onDone, onClear }: { ids: number[]; items: Transaction[]; onDone: () => void; onClear: () => void }) {
   const [tag, setTag] = useState<number | null>(null);
   const [cat, setCat] = useState<number | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  // Deux opérations opposées sur deux comptes : proposer « virement entre mes comptes ».
+  const canPair =
+    items.length === 2 && items[0].account_id !== items[1].account_id && items[0].amount_cents === -items[1].amount_cents;
+
+  const pair = async () => {
+    try {
+      await api.post("/transactions/pair", { ids });
+      setMsg("Virement entre tes comptes enregistré : les deux lignes sont exclues des dépenses et revenus.");
+      onDone();
+    } catch (err) {
+      setMsg((err as Error).message);
+    }
+  };
 
   const run = async (body: object, done: (r: { updated: number; inherited_kept: number }) => string) => {
     const r = await api.post<{ updated: number; inherited_kept: number }>("/transactions/bulk", { ids, ...body });
@@ -282,7 +341,7 @@ function BulkBar({ ids, onDone, onClear }: { ids: number[]; onDone: () => void; 
   };
 
   return (
-    <div className="fixed inset-x-0 bottom-14 z-10 px-4 sm:bottom-4">
+    <div className="fixed inset-x-0 bottom-16 z-10 px-4 sm:bottom-4 lg:pl-60">
       <div className="card mx-auto max-w-5xl space-y-2 shadow-lg">
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <span className="font-medium">{ids.length} sélectionnée{ids.length > 1 ? "s" : ""}</span>
@@ -307,6 +366,11 @@ function BulkBar({ ids, onDone, onClear }: { ids: number[]; onDone: () => void; 
           <button className="btn-ghost" disabled={cat === null} onClick={() => run({ set_category: true, category_id: cat }, (r) => `${r.updated} opération(s) catégorisée(s).`)}>
             Catégoriser
           </button>
+          {canPair && (
+            <button className="btn-ghost font-medium text-indigo-600 dark:text-indigo-300" onClick={pair}>
+              ↔ Virement entre mes comptes
+            </button>
+          )}
           <button className="btn-ghost ml-auto" onClick={onClear}>Désélectionner</button>
         </div>
         {msg && <p className="text-xs text-slate-500">{msg}</p>}
@@ -401,6 +465,11 @@ function EditPanel({
             ))}
         </dl>
       )}
+      {t.pair_account && (
+        <p className="text-xs text-slate-500">
+          Virement entre tes comptes ({t.amount_cents < 0 ? "vers" : "depuis"} « {t.pair_account} ») : exclu des dépenses et des revenus.
+        </p>
+      )}
       {!t.counted && (
         <p className="text-xs text-slate-500">
           Cette ligne n'est pas comptée dans les statistiques
@@ -423,6 +492,11 @@ function EditPanel({
               Dissocier le rapprochement
             </button>
           )}
+          {t.pair_account && (
+            <button className="btn-ghost text-red-600" onClick={() => onUnlink(t)}>
+              Ce n'est pas un virement entre mes comptes
+            </button>
+          )}
         </div>
       </div>
 
@@ -438,6 +512,8 @@ function EditPanel({
           </p>
         )}
       </div>
+
+      <FollowRecurring t={t} />
 
       {t.merchant_id !== null && t.merchant && !draft && (
         <button className="btn-ghost" onClick={startService}>
@@ -463,5 +539,67 @@ function EditPanel({
         />
       )}
     </div>
+  );
+}
+
+/** Opérations « à venir » : vues à la banque mais pas encore comptabilisées (hors statistiques). */
+/** « Suivre comme récurrent » : l'opération devient une échéance attendue (prévision, budgets). */
+function FollowRecurring({ t }: { t: Transaction }) {
+  const [freq, setFreq] = useState<Frequency>("mensuel");
+  const [done, setDone] = useState<string | null>(null);
+  if (t.recurring_id !== null || done) {
+    return (
+      <p className="text-xs text-slate-500">
+        🔁 {done ?? "Fait partie d'une opération récurrente."}{" "}
+        <Link to="/prevoir/recurrents" className="font-medium text-accent-600 hover:underline dark:text-accent-300">Voir les récurrents →</Link>
+      </p>
+    );
+  }
+  const follow = async () => {
+    const r = await api.post<{ next_date: string | null }>(`/recurring/from-transaction/${t.id}`, { frequency: freq });
+    setDone(`Suivi ${FREQUENCY_LABELS[freq].toLowerCase()}${r.next_date ? `, prochaine échéance le ${formatDate(r.next_date)}` : ""}.`);
+  };
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <select className="input w-44 py-1.5" value={freq} onChange={(e) => setFreq(e.target.value as Frequency)} aria-label="Fréquence">
+        {Object.entries(FREQUENCY_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+      </select>
+      <button className="btn-ghost" onClick={follow}>🔁 Suivre comme récurrent</button>
+    </div>
+  );
+}
+
+function PendingList({ accountId }: { accountId: number | null }) {
+  const [rows, setRows] = useState<Pending[]>([]);
+  useEffect(() => {
+    api.get<Pending[]>(`/pending${accountId !== null ? `?account_id=${accountId}` : ""}`).then(setRows);
+  }, [accountId]);
+  if (rows.length === 0) return null;
+  const total = rows.reduce((s, p) => s + p.amount_cents, 0);
+  return (
+    <details className="card border-amber-200 bg-amber-50/60 dark:border-amber-500/20 dark:bg-amber-500/5" open>
+      <summary className="flex cursor-pointer items-center justify-between gap-2 font-medium">
+        <span>⏳ À venir : {rows.length} opération{rows.length > 1 ? "s" : ""}</span>
+        <span className="tabular-nums">{formatCents(total)}</span>
+      </summary>
+      <p className="mt-1 text-xs text-slate-500">
+        Vues à la banque mais pas encore comptabilisées : elles ne comptent pas encore dans les statistiques et
+        deviendront des opérations normales à la synchro qui suit leur passage.
+      </p>
+      <ul className="mt-2 divide-y divide-amber-200/60 dark:divide-white/5">
+        {rows.map((p) => (
+          <li key={p.id} className="flex items-center gap-3 py-2 text-sm">
+            <CategoryIcon id={p.category_id} size="sm" />
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-medium">{p.label}</p>
+              <p className="truncate text-xs text-slate-500">
+                {formatDate(p.booked_at)} · {p.account_name}
+              </p>
+            </div>
+            <span className={`shrink-0 font-semibold tabular-nums ${p.amount_cents > 0 ? "text-emerald-600" : ""}`}>{formatCents(p.amount_cents)}</span>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }

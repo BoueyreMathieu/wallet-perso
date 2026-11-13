@@ -42,7 +42,7 @@ $lines = @(
     "SECRET_KEY=$(New-Hex 32)",
     "ENCRYPTION_KEY=$fernet",
     "POSTGRES_PASSWORD=$(New-Hex 24)",
-    "COOKIE_SECURE=false"
+    "COOKIE_SECURE=true"
 )
 # Fins de ligne Unix (LF) : un "\r" final pourrait se retrouver dans les valeurs.
 [IO.File]::WriteAllText($envPath, ($lines -join "`n") + "`n")
@@ -50,3 +50,4 @@ $lines = @(
 Write-Host ".env cree." -ForegroundColor Green
 Write-Host "IMPORTANT : sauvegarde ENCRYPTION_KEY en lieu sur (gestionnaire de mots de passe)." -ForegroundColor Yellow
 Write-Host "Sans elle, les connexions bancaires enregistrees ne pourront plus etre dechiffrees."
+Write-Host "Une fois l'appli demarree, lance scripts\securiser-env.ps1 pour remplacer le mot de passe en clair par son empreinte." -ForegroundColor Yellow

@@ -7,6 +7,7 @@ from app.models import (
     Account,
     AppMeta,
     BalanceSnapshot,
+    PendingTransaction,
     Budget,
     Category,
     Connection,
@@ -80,13 +81,17 @@ def clear_account(db: Session, acc: Account) -> int:
     txns = db.scalars(select(Transaction).where(Transaction.account_id == acc.id)).all()
     n = delete_transactions(db, list(txns))
     db.execute(delete(BalanceSnapshot).where(BalanceSnapshot.account_id == acc.id))
+    db.execute(delete(PendingTransaction).where(PendingTransaction.account_id == acc.id))
     db.execute(delete(ImportBatch).where(ImportBatch.account_id == acc.id))
+    # Récurrents détectés sur ce compte : ils n'ont plus d'opérations (les déclarés à la main restent).
+    db.execute(delete(RecurringSeries).where(RecurringSeries.account_id == acc.id, RecurringSeries.source == "auto"))
     return n
 
 
 def delete_account(db: Session, acc: Account) -> int:
     n = clear_account(db, acc)
     db.execute(delete(Holding).where(Holding.account_id == acc.id))
+    db.execute(delete(RecurringSeries).where(RecurringSeries.account_id == acc.id))
     db.delete(acc)
     return n
 
@@ -131,7 +136,7 @@ def wipe_all(db: Session, keep_accounts: bool) -> None:
     db.execute(delete(transaction_tag))
     db.execute(delete(merchant_tag))
     db.execute(delete(rule_tag).where(rule_tag.c.rule_id.in_(select(Rule.id).where(Rule.from_correction.is_(True)))))
-    for model in (Transaction, ImportBatch, BalanceSnapshot, RecurringSeries, Budget, Goal, Holding):
+    for model in (PendingTransaction, Transaction, ImportBatch, BalanceSnapshot, RecurringSeries, Budget, Goal, Holding):
         db.execute(delete(model))
     db.execute(delete(Rule).where(Rule.from_correction.is_(True)))
     db.execute(delete(Merchant))

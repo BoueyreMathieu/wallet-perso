@@ -41,6 +41,8 @@ class AccountOut(BaseModel):
     provider: str
     balance_cents: int | None
     balance_date: date | None
+    pending_cents: int = 0  # opérations « à venir » (pas encore comptabilisées)
+    pending_count: int = 0
 
 
 class BalanceIn(BaseModel):
@@ -56,6 +58,47 @@ class CategoryOut(BaseModel):
     name: str
     kind: str
     color: str | None
+    icon: str | None = None
+    protected: bool = False
+    nature: str | None = None  # réglage de l'utilisateur (vide = automatique)
+    nature_effective: str | None = None  # fixe / essentiel / plaisir (dépenses seulement)
+
+
+CategoryKind = Literal["depense", "revenu", "transfert"]
+
+
+class CategoryIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    parent_id: int | None = None
+    kind: CategoryKind | None = None  # sous-catégorie : celui du parent
+    color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    icon: str | None = Field(default=None, max_length=50)
+
+
+class CategoryPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    nature: Literal["fixe", "essentiel", "plaisir", "auto"] | None = None  # « auto » : revenir au réglage par défaut
+    parent_id: int | None = None
+    move: bool = False  # True : appliquer parent_id (None = devenir une catégorie principale)
+    kind: CategoryKind | None = None
+    color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    icon: str | None = Field(default=None, max_length=50)
+
+
+class CategoryUsage(BaseModel):
+    id: int
+    transactions: int
+    rules: int
+    merchants: int
+
+
+class CategoryDeleteOut(BaseModel):
+    deleted: int
+    transactions: int
+    moved_to: int | None
+    rules: int
+    merchants: int
+    to_categorize: int
 
 
 class NetWorthOut(BaseModel):
@@ -107,6 +150,13 @@ class TransactionOut(BaseModel):
     rule_id: int | None = None
     source: str = ""
     tags: list[TagRef] = []
+    transfer_pair_id: int | None = None
+    pair_account: str | None = None  # virement entre mes comptes : l'autre compte
+    recurring_id: int | None = None  # opération récurrente (abonnement, salaire…) à laquelle elle appartient
+
+
+class PairIn(BaseModel):
+    ids: list[int] = Field(min_length=2, max_length=2)
 
 
 class TransactionPage(BaseModel):

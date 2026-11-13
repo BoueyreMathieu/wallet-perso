@@ -7,6 +7,7 @@ import { formatCents } from "../format";
 const SOURCE_LABELS: Record<string, string> = {
   csv_credit_agricole: "Crédit Agricole (CSV)",
   csv_paypal: "PayPal (CSV)",
+  enable_banking: "Synchro bancaire",
 };
 
 export default function Data() {
@@ -37,8 +38,23 @@ export default function Data() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Données</h1>
+      <h2 className="text-lg font-semibold">Données</h2>
       {msg && <p className="card text-sm">{msg}</p>}
+
+      <section className="card space-y-2">
+        <h2 className="font-medium">↔ Virements entre mes comptes</h2>
+        <p className="text-sm text-slate-500">
+          Les virements d'un de tes comptes vers un autre (ex. courant → livret) sont appariés automatiquement à chaque
+          import ou synchro, et exclus des dépenses et revenus. Pour un cas manqué : coche les deux opérations dans
+          Opérations puis « Virement entre mes comptes ».
+        </p>
+        <button
+          className="btn-ghost"
+          onClick={() => run("", () => api.post<{ updated: number }>("/transfers/detect"), (n) => (n ? `${n} virement(s) apparié(s).` : "Aucun nouveau virement trouvé."))}
+        >
+          Rechercher maintenant
+        </button>
+      </section>
 
       <section className="card space-y-2">
         <h2 className="font-medium">Imports</h2>

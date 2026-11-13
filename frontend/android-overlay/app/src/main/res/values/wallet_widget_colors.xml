@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="wallet_widget_bg">#F2FFFFFF</color>
+    <color name="wallet_widget_text">#FF1E293B</color>
+    <color name="wallet_widget_muted">#FF64748B</color>
+    <color name="wallet_widget_accent">#FF6236E8</color>
+    <color name="wallet_widget_chip">#FFFEF3C7</color>
+    <color name="wallet_widget_chip_text">#FF92400E</color>
+</resources>

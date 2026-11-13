@@ -66,8 +66,21 @@ def owner_signatures(holder: str | None) -> list[str]:
     return [" ".join(words[:2])] if len(words) >= 2 else []
 
 
-def is_own_transfer(label_norm: str, signatures: list[str]) -> bool:
-    return label_norm.startswith("VIREMENT") and any(s and s in label_norm for s in signatures)
+# Ancien vendeur unique des virements à ton nom (version du 12/11) : toujours reconnu, s'il existe encore.
+OWN_MERCHANT = "Mes virements"
+
+
+def is_own_name(name_norm: str, signatures: list[str]) -> bool:
+    """Le nom (normalisé) commence par une de tes signatures (« MONSIEUR DUPONT JEA » → oui)."""
+    return any(s and name_norm.startswith(s) for s in signatures)
+
+
+def is_own_transfer(label_norm: str, signatures: list[str], merchant_norm: str = "") -> bool:
+    if merchant_norm == normalize(OWN_MERCHANT):
+        return True
+    if any(s and s in label_norm for s in signatures):
+        return label_norm.startswith(("VIREMENT", "VIR ", "VIR.")) or is_own_name(merchant_norm, signatures)
+    return False
 
 
 def find_category(
@@ -87,7 +100,7 @@ def find_category(
             break
         if r.matches(label_norm, merchant_norm, amount):
             return r.category_id, r
-    if internal_transfer_category_id and is_own_transfer(label_norm, signatures):
+    if internal_transfer_category_id and is_own_transfer(label_norm, signatures, merchant_norm):
         return internal_transfer_category_id, None
     for r in rules:
         if r.priority >= 50 and r.matches(label_norm, merchant_norm, amount):

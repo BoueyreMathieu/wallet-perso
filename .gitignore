@@ -1,5 +1,7 @@
 # Secrets
 .env
+.env.*
+!.env.example
 
 # Python
 __pycache__/
@@ -18,6 +20,16 @@ imports/
 *.ofx
 *.qif
 
+# Sauvegardes et dumps de la base : JAMAIS dans git (même chiffrés)
+backups/
+*.sql
+*.sql.gz
+*.dump
+*.dump.age
+*.age
+*.backup
+backup/rclone/
+
 # Divers
 .DS_Store
 Thumbs.db
@@ -26,6 +38,20 @@ Thumbs.db
 # Logs
 *.log
 
-# Clés privées (Enable Banking…)
+# Clés privées (Enable Banking, clé age, signature Android…)
 secrets/
 *.pem
+*.key
+*.jks
+*.keystore
+keystore.properties
+age-identity*.txt
+
+# Projet Android généré par Capacitor (npm run android:prepare) : recréé à chaque build
+frontend/android/
+
+# Verrou de livraison entre les conversations Claude (docs/COORDINATION.md)
+.dev-lock
+
+# Jeu de données de test (fictif, régénérable : docs/demo.md)
+frontend/public/demo/

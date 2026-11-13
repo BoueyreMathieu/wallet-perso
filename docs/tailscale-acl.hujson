@@ -1,0 +1,28 @@
+// Politique d'accès Tailscale conseillée pour Wallet perso.
+// À coller dans https://login.tailscale.com/admin/acls (onglet « JSON editor »), en remplaçant la politique par défaut
+// (qui autorise tout le monde vers tout). Lis docs/securite.md avant : elle restreint TOUT ton réseau Tailscale.
+//
+// Principe :
+//   - la machine qui héberge le Wallet porte l'étiquette tag:wallet ;
+//   - seuls TES appareils (membres du tailnet) peuvent l'atteindre, et seulement en HTTPS (443) ;
+//   - tes appareils peuvent toujours se parler entre eux (autogroup:self) ;
+//   - SSH vers le serveur uniquement par Tailscale SSH, avec reconnexion demandée toutes les 12 h.
+{
+  "tagOwners": {
+    "tag:wallet": ["autogroup:admin"],
+  },
+
+  "acls": [
+    // Tes appareils → l'appli (https://wallet.<ton-réseau>.ts.net)
+    {"action": "accept", "src": ["autogroup:member"], "dst": ["tag:wallet:443"]},
+    // Tes appareils entre eux (PC ↔ téléphone…), comme avant
+    {"action": "accept", "src": ["autogroup:member"], "dst": ["autogroup:self:*"]},
+    // Le serveur Wallet n'initie aucune connexion vers tes appareils : aucune règle au départ de tag:wallet.
+  ],
+
+  "ssh": [
+    // Administration du serveur : Tailscale SSH (le port 22 reste fermé sur Internet).
+    {"action": "check", "src": ["autogroup:member"], "dst": ["tag:wallet"], "users": ["ubuntu", "root"], "checkPeriod": "12h"},
+  ],
+
+}

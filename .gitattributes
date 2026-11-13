@@ -1,2 +1,2 @@
-* text=auto eol=lf
-*.ps1 text eol=crlf
+# Scripts exécutés dans des conteneurs Linux : toujours en fins de ligne Unix.
+*.sh text eol=lf

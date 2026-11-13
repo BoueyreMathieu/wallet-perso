@@ -25,6 +25,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    false,
     true,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -143,6 +144,8 @@ class Category(Base):
     kind: Mapped[str] = mapped_column(String(20), default="depense")
     color: Mapped[str | None] = mapped_column(String(7))
     icon: Mapped[str | None] = mapped_column(String(50))
+    # Dépenses : fixe (charges), essentiel (courant nécessaire), plaisir (non essentiel). Vide = automatique.
+    nature: Mapped[str | None] = mapped_column(String(12))
 
 
 class Merchant(Base):
@@ -159,7 +162,14 @@ class Merchant(Base):
 
 
 class RecurringSeries(Base):
-    """Abonnement ou prélèvement récurrent détecté ou déclaré."""
+    """Opération récurrente : abonnement, prélèvement, salaire, virement programmé…
+
+    - source « auto » : détectée dans l'historique (statut « suggere » tant que l'utilisateur ne l'a pas confirmée) ;
+      « manuel » : déclarée à la main (ex. assurance annuelle pas encore vue).
+    - statut : suggere (détectée, à confirmer), actif (confirmée), ignore (refusée : plus jamais proposée),
+      termine (résiliée).
+    - montant signé : négatif = sortie d'argent, positif = entrée.
+    """
 
     __tablename__ = "recurring_series"
 
@@ -167,10 +177,24 @@ class RecurringSeries(Base):
     label: Mapped[str] = mapped_column(String(150))
     merchant_id: Mapped[int | None] = mapped_column(ForeignKey("merchant.id", ondelete="SET NULL"))
     category_id: Mapped[int | None] = mapped_column(ForeignKey("category.id", ondelete="SET NULL"))
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("account.id", ondelete="CASCADE", name="fk_recurring_account"))
     expected_amount_cents: Mapped[int] = mapped_column(BigInteger)
     frequency: Mapped[str] = mapped_column(String(20))
     next_expected_date: Mapped[date | None] = mapped_column(Date)
-    status: Mapped[str] = mapped_column(String(20), default="actif")
+    status: Mapped[str] = mapped_column(String(20), default="suggere")
+    source: Mapped[str] = mapped_column(String(10), default="auto", server_default="auto")
+    # Regroupement : « vendeur », « categorie » (salaire, loyer… aux libellés changeants) ou « montant » (revenu régulier).
+    basis: Mapped[str] = mapped_column(String(10), default="vendeur", server_default="vendeur")
+    is_transfer: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    first_date: Mapped[date | None] = mapped_column(Date)
+    last_date: Mapped[date | None] = mapped_column(Date)
+    occurrences: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Changement de prix : ancien montant et date du premier prélèvement au nouveau prix.
+    previous_amount_cents: Mapped[int | None] = mapped_column(BigInteger)
+    price_changed_on: Mapped[date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    merchant: Mapped["Merchant | None"] = relationship()
 
 
 class Transaction(Base):
@@ -179,6 +203,7 @@ class Transaction(Base):
         UniqueConstraint("account_id", "dedup_hash", name="uq_transaction_dedup"),
         Index("ix_transaction_account_date", "account_id", "booked_at"),
         Index("ix_transaction_category", "category_id"),
+        Index("ix_transaction_recurring", "recurring_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -303,3 +328,46 @@ class Tag(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(50), unique=True)
     color: Mapped[str | None] = mapped_column(String(7))
+
+
+class DeviceToken(Base):
+    """Appareil autorisé (appli Android, widgets) : jeton long, stocké seulement sous forme d'empreinte."""
+
+    __tablename__ = "device_token"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # « app » : appli Android / widgets (jeton Bearer) ; « navigateur » : session web (cookie).
+    kind: Mapped[str] = mapped_column(String(12), default="app", server_default="app")
+
+
+class SecurityEvent(Base):
+    """Journal de sécurité : connexions, échecs, appareils ajoutés ou révoqués, actions destructrices."""
+
+    __tablename__ = "security_event"
+    __table_args__ = (Index("ix_security_event_kind_created", "kind", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    kind: Mapped[str] = mapped_column(String(30))
+    detail: Mapped[str | None] = mapped_column(String(200))
+
+
+class PendingTransaction(Base):
+    """Opération « à venir » d'un compte (vue à la banque, pas encore comptabilisée).
+
+    Remplacée entièrement à chaque synchro du compte ; hors statistiques ; sert au solde prévisionnel."""
+
+    __tablename__ = "pending_transaction"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("account.id", ondelete="CASCADE"), index=True)
+    booked_at: Mapped[date] = mapped_column(Date)
+    amount_cents: Mapped[int] = mapped_column(BigInteger)
+    raw_label: Mapped[str] = mapped_column(String(500))
+    merchant: Mapped[str | None] = mapped_column(String(150))
+    category_id: Mapped[int | None] = mapped_column(ForeignKey("category.id", ondelete="SET NULL"))
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
