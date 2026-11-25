@@ -183,3 +183,74 @@ def test_synced_paypal_purchase_reconciled_directly(auth_client, accounts):
         from app.services.reconcile import reconcile_paypal
 
         assert reconcile_paypal(db) == 0
+
+
+def test_purchase_partly_paid_with_paypal_balance_is_reconciled(auth_client, accounts):
+    """Achat de 20 € dont 7,70 € pris sur le solde PayPal : la banque n'a prélevé que 12,30 €."""
+    from app.connectors.enable_banking import to_statement
+    from app.db import get_sessionmaker
+    from app.services.importing import ingest
+
+    ca, pay = accounts
+    cats = {c["name"]: c["id"] for c in auth_client.get("/api/categories").json()}
+    _upload(auth_client, "credit-agricole", make_csv(CA_ROWS, number="77770000555"), ca["id"])
+    synced = [
+        {"entry_reference": "9B1", "status": "BOOK", "credit_debit_indicator": "DBIT", "transaction_date": "2026-11-01",
+         "transaction_amount": {"amount": "20.00", "currency": "EUR"}, "creditor": {"name": "Pizza Roma"}, "remittance_information": []},
+    ]
+    with get_sessionmaker()() as db:
+        res = ingest(db, to_statement(synced, [], "PayPal"), pay["id"], None, "PayPal")
+        db.commit()
+    assert res.reconciled == 1
+
+    bank = next(t for t in _tx(auth_client, account_id=ca["id"]) if t["amount_cents"] == -1230)
+    assert bank["merchant"] == "Pizza Roma" and bank["category_id"] == cats["Restaurants"]
+    assert bank["details"]["partiel"] is True and bank["details"]["solde_paypal_cents"] == 770
+    assert bank["counted"] is False  # la dépense (20 €) est comptée sur l'achat PayPal
+    purchase = next(t for t in _tx(auth_client, account_id=pay["id"]) if t["details"]["transaction"] == "9B1")
+    assert purchase["linked_id"] == bank["id"] and purchase["counted"] is True
+
+    # Dissocier : la ligne bancaire redevient la dépense comptée (« PayPal »), et n'est pas re-rapprochée.
+    assert auth_client.post(f"/api/transactions/{bank['id']}/unlink").status_code == 200
+    bank2 = next(t for t in _tx(auth_client, account_id=ca["id"]) if t["id"] == bank["id"])
+    assert bank2["merchant"] == "PayPal" and bank2["counted"] is True and "partiel" not in (bank2["details"] or {})
+    with get_sessionmaker()() as db:
+        from app.services.reconcile import reconcile_paypal
+
+        assert reconcile_paypal(db) == 0
+
+
+def test_purchase_paid_only_with_paypal_balance_follows_bank_series(auth_client, accounts):
+    """Échéance d'un récurrent du compte courant payée entièrement avec le solde PayPal : pas « en retard »."""
+    from datetime import date
+
+    from app.connectors.enable_banking import to_statement
+    from app.db import get_sessionmaker
+    from app.models import RecurringSeries, Transaction
+    from app.services.importing import ingest
+    from app.services.recurring import refresh
+
+    ca, pay = accounts
+    synced = [
+        {"entry_reference": "9C1", "status": "BOOK", "credit_debit_indicator": "DBIT", "transaction_date": "2026-11-02",
+         "transaction_amount": {"amount": "5.00", "currency": "EUR"}, "creditor": {"name": "Ciné Club"}, "remittance_information": []},
+        {"entry_reference": "9C2", "status": "BOOK", "credit_debit_indicator": "DBIT", "transaction_date": "2026-11-05",
+         "transaction_amount": {"amount": "48.00", "currency": "EUR"}, "creditor": {"name": "Ciné Club"}, "remittance_information": []},
+    ]
+    with get_sessionmaker()() as db:
+        ingest(db, to_statement(synced, [], "PayPal"), pay["id"], None, "PayPal")
+        db.commit()
+        merchant_id = db.query(Transaction).filter(Transaction.account_id == pay["id"], Transaction.amount_cents == -500).one().merchant_id
+    assert merchant_id is not None
+    series = auth_client.post("/api/recurring", json={
+        "label": "Ciné Club", "account_id": ca["id"], "amount_cents": -500, "frequency": "mensuel",
+        "next_date": "2026-11-01", "merchant_id": merchant_id,
+    }).json()
+
+    with get_sessionmaker()() as db:
+        refresh(db, date(2026, 11, 20))
+        db.commit()
+        s = db.get(RecurringSeries, series["id"])
+        linked = db.query(Transaction).filter(Transaction.account_id == pay["id"], Transaction.recurring_id == s.id).all()
+        assert [t.amount_cents for t in linked] == [-500]  # l'achat de 48 € n'est pas l'abonnement
+        assert s.last_date == date(2026, 11, 2) and s.next_expected_date == date(2026, 12, 2)

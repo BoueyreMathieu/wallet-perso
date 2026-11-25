@@ -8,13 +8,16 @@ from app.db import get_db
 from app.models import Account, BalanceSnapshot, PendingTransaction, utcnow
 from app.schemas import AccountIn, AccountOut, AccountPatch, BalanceIn, NetWorthOut
 from app.security import require_auth
+from app.services.alerts import account_gap
 from app.services.balances import current_balance
+from app.services.wealth import refresh_valuations
 
 router = APIRouter(prefix="/api/accounts", tags=["comptes"], dependencies=[Depends(require_auth)])
 
 
 def _to_out(db: Session, acc: Account) -> AccountOut:
     balance, balance_date = current_balance(db, acc.id)
+    gap = account_gap(db, acc, date.today())
     p_sum, p_count = db.execute(
         select(func.coalesce(func.sum(PendingTransaction.amount_cents), 0), func.count(PendingTransaction.id)).where(
             PendingTransaction.account_id == acc.id
@@ -33,6 +36,12 @@ def _to_out(db: Session, acc: Account) -> AccountOut:
         balance_date=balance_date,
         pending_cents=int(p_sum or 0),
         pending_count=int(p_count or 0),
+        connection_id=acc.connection_id,
+        connection_label=acc.connection.label if acc.connection else None,
+        connection_status=acc.connection.status if acc.connection else None,
+        last_sync_at=acc.connection.last_sync_at if acc.connection else None,
+        balance_gap_cents=gap.gap_cents if gap else None,
+        balance_gap_since=gap.since if gap else None,
     )
 
 
@@ -56,6 +65,8 @@ def _set_balance(db: Session, acc: Account, day: date, cents: int) -> None:
 
 @router.get("", response_model=list[AccountOut])
 def list_accounts(include_archived: bool = False, db: Session = Depends(get_db)):
+    if refresh_valuations(db, date.today()):
+        db.commit()  # biens et crédits réglés : valeur du jour
     q = select(Account).options(selectinload(Account.balances), selectinload(Account.connection))
     if not include_archived:
         q = q.where(Account.is_archived.is_(False))

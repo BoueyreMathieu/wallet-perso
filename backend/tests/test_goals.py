@@ -24,8 +24,8 @@ def test_goals_on_an_account_and_by_hand(auth_client):
                                      "target_date": in_a_year.isoformat(), "priority": 1}).json()
     hand = c.post("/api/goals", json={"name": "Cadeau inventé", "target_cents": 10000, "saved_cents": 2500}).json()
     assert trip["current_cents"] == 200000 and trip["status"] == "atteint"
-    # Le reste du livret (100 €) va à la voiture ; 4 000 € à trouver en 12 mois.
-    assert car["current_cents"] == 100000 and car["monthly_needed_cents"] == -(-400000 // 12) and car["monthly_rate_cents"] == 20000
+    # Le reste du livret (100 €) va à la voiture ; 4 000 € à trouver d'ici un an (mois en cours et mois cible compris).
+    assert car["current_cents"] == 100000 and car["monthly_needed_cents"] == -(-400000 // months_between(date.today(), in_a_year)) and car["monthly_rate_cents"] == 20000
     assert car["status"] == "en_retard"  # à 200 €/mois il faut 20 mois
     assert hand["current_cents"] == 2500 and hand["remaining_cents"] == 7500 and hand["eta"] is None
     assert c.patch(f"/api/goals/{hand['id']}", json={"saved_cents": 10000}).json()["status"] == "atteint"

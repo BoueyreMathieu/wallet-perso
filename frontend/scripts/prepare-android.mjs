@@ -152,6 +152,30 @@ if (walletKeyFile.exists()) { walletKeyFile.withInputStream { walletKey.load(it)
   }
 }
 
+// --- Notifications des alertes : WorkManager (contrôle en arrière-plan) et permission Android 13+ (docs/notifications.md) ---
+if (fs.existsSync(gradlePath)) {
+  const g = fs.readFileSync(gradlePath, "utf8");
+  if (!g.includes("androidx.work:work-runtime")) {
+    const next = g.replace(/^dependencies\s*\{/m, (m) => `${m}\n    implementation "androidx.work:work-runtime:2.9.1" // wallet-perso : notifications des alertes`);
+    if (next !== g) {
+      fs.writeFileSync(gradlePath, next);
+      console.log("build.gradle : WorkManager ajouté (notifications des alertes).");
+    } else {
+      console.warn("build.gradle inattendu : WorkManager non ajouté (voir docs/notifications.md).");
+    }
+  }
+}
+{
+  const man = fs.readFileSync(manifestPath, "utf8");
+  if (!man.includes("android.permission.POST_NOTIFICATIONS")) {
+    const next = man.replace(/(<uses-permission android:name="android\.permission\.INTERNET" \/>)/, '$1\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />');
+    if (next !== man) {
+      fs.writeFileSync(manifestPath, next);
+      console.log("Manifeste : permission des notifications ajoutée.");
+    }
+  }
+}
+
 // Version de l'appli = version de package.json (0.9.0 → versionName "0.9.0", versionCode 900).
 if (fs.existsSync(gradlePath)) {
   const version = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version;

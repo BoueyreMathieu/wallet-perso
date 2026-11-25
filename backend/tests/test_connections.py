@@ -190,6 +190,11 @@ def test_sync_stale_on_app_open_and_error_kept(auth_client, fake, monkeypatch):
             db.get(Connection, conn["id"]).last_sync_at = datetime.now(timezone.utc) - timedelta(hours=hours)
             db.commit()
 
+    # Première vraie synchro (associer les comptes n'importe rien) : les opérations arrivent.
+    age(2)
+    r = c.post("/api/connections/sync-stale").json()
+    assert r["synced"] == [conn["label"]] and r["imported"] > 0
+    # Deux heures plus tard : la banque renvoie les mêmes opérations, rien n'est importé deux fois.
     age(2)
     r = c.post("/api/connections/sync-stale").json()
     assert r["synced"] == [conn["label"]] and r["imported"] == 0

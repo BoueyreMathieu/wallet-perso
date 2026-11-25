@@ -32,6 +32,16 @@ def core(name: str | None) -> str:
     return " ".join(words)
 
 
+ALIAS_PREFIX = "nom:"
+
+
+def name_alias(name: str | None) -> str | None:
+    """Clé mémorisée quand un vendeur est fusionné ou renommé : le nom d'origine reconnaîtra le vendeur gardé
+    (« nom:CARREFOUR CITY »). Même normalisation que `core` : les références finales ne comptent pas."""
+    c = core(name)
+    return ALIAS_PREFIX + c if len(c) >= 3 else None
+
+
 def relation(a: str | None, b: str | None) -> str | None:
     ka, kb = core(a), core(b)
     if not ka or not kb or len(min(ka, kb, key=len)) < 3:

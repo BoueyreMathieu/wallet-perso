@@ -1,6 +1,7 @@
 import { ReactNode, useEffect, useMemo, useState } from "react";
+import { DemoToggle } from "../demo/DemoBanner";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Account, Dashboard, NetWorth, Pending, Transaction, api } from "../api";
+import { Account, AlertItem, Dashboard, NetWorth, Pending, Transaction, api } from "../api";
 import { ChartFrame, CumulativeChart, Donut, Legend, Slice, Sparkline, ACCENT, MUTED_LINE } from "../components/charts";
 import { CategoryIcon, UNCATEGORIZED_COLOR, useCategories } from "../components/categories";
 import { KpiPanel } from "../components/KpiPanel";
@@ -151,6 +152,8 @@ export default function Home() {
     saveAccounts(value);
   };
 
+  const extraAlerts = useHomeAlerts();
+
   const slices: Slice[] = useMemo(
     () =>
       (data?.by_category ?? [])
@@ -186,7 +189,7 @@ export default function Home() {
   const hasTodo =
     focus === null &&
     (todo.to_categorize_ops > 0 || todo.connections_to_renew.length > 0 || todo.connections_in_error.length > 0 || !!todo.backup_warning ||
-      todo.recurring_to_confirm > 0 || todo.price_increases.length > 0 || todo.budget_alerts.length > 0);
+      todo.recurring_to_confirm > 0 || todo.price_increases.length > 0 || todo.budget_alerts.length > 0 || extraAlerts.length > 0);
   const visibleAccounts = accounts.filter((a) => !a.is_archived);
   const netWorth =
     selected.length === 0
@@ -281,19 +284,22 @@ export default function Home() {
             <span className="text-sm font-semibold">{label}</span>
           )}
           {!focusCat && (
-            <button className={`btn-ghost px-3 text-sm ${editing ? "text-accent-600 dark:text-accent-300" : ""}`} onClick={() => setEditing(!editing)} title="Personnaliser l'accueil" aria-pressed={editing}>
-              ✏️<span className="hidden sm:inline"> Personnaliser</span>
+            <button className={`btn-ghost px-3 text-sm ${editing ? "text-accent-600 dark:text-accent-300" : ""}`} onClick={() => setEditing(!editing)} title="Personnaliser l'accueil" aria-label="Personnaliser l'accueil" aria-pressed={editing}>
+              ✏️
             </button>
           )}
+          {!focusCat && <DemoToggle />}
           {!(periodKey === "month" && data.is_current) && (
             <button
-              className="btn-ghost text-sm font-medium text-accent-600 dark:text-accent-300"
+              className="btn-ghost px-3 text-base font-medium text-accent-600 dark:text-accent-300"
               onClick={() => {
                 setPeriodKey("month");
                 setMonth(null);
               }}
+              title="Revenir au mois en cours"
+              aria-label="Revenir au mois en cours"
             >
-              ↺ Mois en cours
+              ↺
             </button>
           )}
         </div>
@@ -555,10 +561,10 @@ export default function Home() {
               </Link>
             )}
             {todo.connections_to_renew.map((c) => (
-              <Link key={c} to="/parametres/connexions" className="font-medium hover:underline">🔑 Autorisation à renouveler : {c}</Link>
+              <Link key={c} to="/comptes" className="font-medium hover:underline">🔑 Autorisation à renouveler : {c}</Link>
             ))}
             {todo.connections_in_error.map((c) => (
-              <Link key={c} to="/parametres/connexions" className="font-medium text-red-600 hover:underline">⚠️ Connexion à vérifier : {c}</Link>
+              <Link key={c} to="/comptes" className="font-medium text-red-600 hover:underline">⚠️ Connexion à vérifier : {c}</Link>
             ))}
             {todo.backup_warning && (
               <Link to="/parametres/securite" className="font-medium hover:underline">💾 {todo.backup_warning}</Link>
@@ -574,6 +580,9 @@ export default function Home() {
             {todo.recurring_to_confirm > 0 && (
               <Link to="/prevoir/recurrents" className="font-medium hover:underline">🔁 {todo.recurring_to_confirm} récurrent(s) détecté(s) à confirmer</Link>
             )}
+            {extraAlerts.map((a) => (
+              <Link key={a.key} to={a.link} title={a.body} className={`font-medium hover:underline ${a.level === "danger" ? "text-red-600" : ""}`}>{a.title}</Link>
+            ))}
           </div>
         </section>
           ) : null },
@@ -830,4 +839,16 @@ function LatestMoves({ accounts, className = "" }: { accounts: number[]; classNa
       </ul>
     </section>
   );
+}
+
+// Alertes ajoutées à « À faire » (celles que le résumé de l'accueil ne montre pas déjà : budgets, autorisations,
+// sauvegarde, hausses de prix et récurrents à confirmer y sont déjà).
+const HOME_ALERTS = /^(tresorerie|depense|ecart|synchro|revenu|retard|objectif|contrat|projet|plafond):/;
+
+function useHomeAlerts(): AlertItem[] {
+  const [alerts, setAlerts] = useState<AlertItem[]>([]);
+  useEffect(() => {
+    api.get<{ alerts: AlertItem[] }>("/alerts").then((r) => setAlerts(r.alerts.filter((a) => HOME_ALERTS.test(a.key))), () => setAlerts([]));
+  }, []);
+  return alerts;
 }

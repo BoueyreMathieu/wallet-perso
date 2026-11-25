@@ -591,8 +591,35 @@ def _others_net_worth(db: Session, ids: list[int]) -> int:
     return total
 
 
+def _month_to_date(db: Session, today: date, ids: list[int]) -> dict[str, float]:
+    """Déjà passé ce mois-ci sur ces comptes (du 1er à aujourd'hui), dans les mêmes rubriques que la simulation :
+    revenus, fixes, essentiels, plaisirs (montants dépensés, positifs), virements (signés) et variation du solde."""
+    from app.services.balances import SPLIT_SOURCE
+
+    lo = month_bounds(today)[0]
+    natures = category_natures(db)
+    out = {"income": 0.0, "fixed": 0.0, "essentiel": 0.0, "plaisir": 0.0, "transfer": 0.0, "net": 0.0}
+    q = select(
+        Transaction.amount_cents, Transaction.category_id, Transaction.recurring_id, Transaction.is_transfer, Transaction.counted, Transaction.source
+    ).where(Transaction.account_id.in_(ids), Transaction.booked_at >= lo, Transaction.booked_at <= today)
+    for amount, cat, rec, transfer, counted, source in db.execute(q):
+        if source != SPLIT_SOURCE:
+            out["net"] += amount  # ce qui a vraiment bougé sur les comptes
+        if not counted:
+            continue
+        if transfer:
+            out["transfer"] += amount
+        elif amount > 0:
+            out["income"] += amount
+        else:
+            layer = layer_of(cat, rec, natures)
+            out["fixed" if layer == "fixe" else layer] -= amount
+    return out
+
+
 def projection(db: Session, today: date, months: int, account_ids: list[int] | None = None, sc: Scenario | None = None, rate: float = 2.0) -> dict:
-    """Mois par mois (le mois en cours : ce qui reste à venir), même moteur que la trésorerie."""
+    """Mois par mois, même moteur que la trésorerie. Le mois en cours additionne ce qui est déjà passé (du 1er à
+    aujourd'hui) et ce qui reste à venir."""
     sc = sc or Scenario()
     ids = account_ids or default_accounts(db)
     names = dict(db.execute(select(Account.id, Account.name)).all())
@@ -601,10 +628,16 @@ def projection(db: Session, today: date, months: int, account_ids: list[int] | N
     sim = _simulate(db, today, end, ids, model, sc, names)
     out, prev = [], None
     others = float(_others_net_worth(db, ids))
+    done = _month_to_date(db, today, ids)
     for x in sim["days"]:
         if x["date"] != month_bounds(x["date"])[1]:
             continue
-        p = prev or {"income": 0, "fixed": 0, "essentiel": 0, "plaisir": 0, "transfer": 0, "balance": sim["start"], "baseline": sim["start"]}
+        if prev is None:
+            # Mois en cours : on part du 1er du mois, avec ce qui est déjà passé.
+            p = {"income": -done["income"], "fixed": -done["fixed"], "essentiel": -done["essentiel"], "plaisir": -done["plaisir"],
+                 "transfer": -done["transfer"], "balance": sim["start"] - done["net"], "baseline": sim["start"]}
+        else:
+            p = prev
         row = {
             "month": x["date"].strftime("%Y-%m"),
             "partial": x["date"].month == today.month and x["date"].year == today.year,
@@ -619,7 +652,8 @@ def projection(db: Session, today: date, months: int, account_ids: list[int] | N
         row["net_cents"] = round(x["balance"] - p["balance"])
         # Patrimoine : comptes du quotidien (simulés) + le reste (épargne, placements…), qui reçoit l'épargne du mois
         # et rapporte `rate` % par an.
-        others = others * (1 + rate / 100 / 12) + row["epargne_cents"]
+        # (mois en cours : seulement l'épargne encore à venir, celle déjà faite est dans les soldes des autres comptes)
+        others = others * (1 + rate / 100 / 12) + (row["epargne_cents"] if prev is not None else round(-x["transfer"]))
         row["net_worth_cents"] = round(x["balance"] + others)
         out.append(row)
         prev = x
@@ -677,6 +711,9 @@ def budgets_overview(db: Session, month: date, today: date) -> dict:
         fam = _family(parents, b.category_id)
         mine = [r for r in rows if r.category_id in fam]
         spent = -sum(r.amount_cents for r in mine)
+        by_cat: dict[int, int] = defaultdict(int)
+        for r in mine:
+            by_cat[r.category_id] -= r.amount_cents
         recurring_spent = -sum(r.amount_cents for r in mine if r.recurring_id is not None)
         expected_recurring = sum(v for cid, v in upcoming.items() if cid in fam)
         # Reste du mois : pour chaque catégorie de la famille, son habitude moins ce qui est déjà dépensé (voir _unit_days).
@@ -708,6 +745,11 @@ def budgets_overview(db: Session, month: date, today: date) -> dict:
             "pace_cents": pace,
             "remaining_cents": b.monthly_amount_cents - spent,
             "level": level,
+            # Budget d'une catégorie principale : la part de chaque sous-catégorie (et du « général ») dépensée ce mois.
+            "children": [
+                {"category_id": cid, "spent_cents": v}
+                for cid, v in sorted(by_cat.items(), key=lambda kv: -kv[1]) if v > 0
+            ] if len(fam) > 1 else [],
         })
     order = {"depasse": 0, "alerte": 1, "ok": 2}
     items.sort(key=lambda i: (order[i["level"]], -(i["spent_cents"] / max(i["budget_cents"], 1))))

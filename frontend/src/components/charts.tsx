@@ -329,6 +329,66 @@ export function MonthBars({
   );
 }
 
+// --- Comparaison d'une année sur l'autre : deux barres par mois ------------------------------
+
+export const PREV_COLOR = MUTED_LINE;
+
+export function CompareBars({ data, curLabel, prevLabel }: {
+  data: { key: string; label: string; cur: number; prev: number }[];
+  curLabel: string;
+  prevLabel: string;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  const { ref, W, H } = useChartBox(220);
+  const L = 44, B = 24, T = 10;
+  const max = niceMax(Math.max(1, ...data.map((d) => Math.max(d.cur, d.prev))));
+  const every = labelEvery(data.length, W - L, 40);
+  const slot = (W - L) / Math.max(data.length, 1);
+  const bw = Math.min(14, slot / 3);
+  const y = (v: number) => T + (H - T - B) * (1 - v / max);
+  const h = hover !== null ? data[hover] : null;
+  return (
+    <div className="relative" ref={ref}>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Dépenses par mois, cette année et l'an dernier">
+        {[0, max / 2, max].map((t) => (
+          <g key={t}>
+            <line x1={L} x2={W} y1={y(t)} y2={y(t)} className="stroke-slate-200 dark:stroke-white/10" strokeWidth="1" />
+            <text x={L - 6} y={y(t) + 4} textAnchor="end" className="fill-slate-400 text-[11px]">{compactEuros(t)}</text>
+          </g>
+        ))}
+        {data.map((d, i) => {
+          const cx = L + slot * i + slot / 2;
+          const bar = (v: number, x: number, color: string) => {
+            const top = y(v);
+            const height = Math.max(H - B - top, v > 0 ? 2 : 0);
+            const rr = Math.min(4, height / 2, bw / 2);
+            const path = `M${x},${H - B} V${top + rr} Q${x},${top} ${x + rr},${top} H${x + bw - rr} Q${x + bw},${top} ${x + bw},${top + rr} V${H - B} Z`;
+            return height > 0 ? <path d={path} fill={color} /> : null;
+          };
+          return (
+            <g key={d.key} opacity={hover !== null && hover !== i ? 0.5 : 1} onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}>
+              <rect x={cx - slot / 2} y={T} width={slot} height={H - B - T} fill="transparent" />
+              {bar(d.prev, cx - bw - 1, PREV_COLOR)}
+              {bar(d.cur, cx + 1, ACCENT)}
+              {(data.length - 1 - i) % every === 0 && (
+                <text x={cx} y={H - 6} textAnchor="middle" className="fill-slate-400 text-[11px]">{d.label}</text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+      {h && hover !== null && (
+        <Tooltip x={((L + slot * hover + slot / 2) / W) * 100} y={(y(Math.max(h.cur, h.prev)) / H) * 100 - 2}>
+          <p className="font-semibold">{h.label}</p>
+          <p>{curLabel} : {formatCents(h.cur)}</p>
+          <p>{prevLabel} : {formatCents(h.prev)}</p>
+          {h.prev > 0 && <p>Écart : {h.cur >= h.prev ? "+" : ""}{Math.round(((h.cur - h.prev) / h.prev) * 100)} %</p>}
+        </Tooltip>
+      )}
+    </div>
+  );
+}
+
 // --- Dépenses cumulées sur le mois (mois choisi vs mois précédent) -------------------------
 
 export function CumulativeChart({
@@ -552,7 +612,7 @@ export function ProjectionBars({ data, height = 240 }: { data: ProjectionBar[]; 
           let acc = 0;
           const visible = stack.filter((k) => d[k] > 0);
           return (
-            <g key={d.key} opacity={d.partial ? 0.55 : 1}>
+            <g key={d.key} opacity={d.partial ? 0.85 : 1}>
               {visible.map((k, j) => {
                 const y0 = y(acc), y1 = y(acc + d[k]);
                 acc += d[k];
@@ -572,7 +632,7 @@ export function ProjectionBars({ data, height = 240 }: { data: ProjectionBar[]; 
       </svg>
       {hd && hover !== null && (
         <Tooltip x={(cx(hover) / W) * 100} y={(y(Math.max(outTotal(hd), hd.income)) / H) * 100 - 3}>
-          <p className="font-semibold">{hd.label}{hd.partial ? " (reste du mois)" : ""}</p>
+          <p className="font-semibold">{hd.label}{hd.partial ? " (en cours : déjà passé + à venir)" : ""}</p>
           <p>Revenus : {formatCents(hd.income)}</p>
           {[...stack].reverse().filter((k) => hd[k] !== 0).map((k) => (
             <p key={k} className="flex items-center gap-1.5">

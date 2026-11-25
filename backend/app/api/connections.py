@@ -106,18 +106,18 @@ def callback(code: str | None = None, state: str | None = None, error: str | Non
     if error or not code or not state:
         msg = error_description or error or "autorisation annulée"
         log.warning("Retour de banque sans autorisation : %s", msg)
-        return RedirectResponse(f"/parametres/connexions?erreur={quote(msg)}", status_code=303)
+        return RedirectResponse(f"/comptes?erreur={quote(msg)}", status_code=303)
     log.info("Retour de banque reçu")
     try:
         c = sync.finish(db, code, state)
     except (sync.SyncError, EnableBankingError) as e:
         db.rollback()
         log.warning("Autorisation non finalisée : %s", e)
-        return RedirectResponse(f"/parametres/connexions?erreur={quote(str(e))}", status_code=303)
+        return RedirectResponse(f"/comptes?erreur={quote(str(e))}", status_code=303)
     except Exception as e:  # noqa: BLE001 - erreur imprévue : on la journalise et on l'affiche
         db.rollback()
         log.exception("Autorisation non finalisée (erreur imprévue)")
-        return RedirectResponse(f"/parametres/connexions?erreur={quote(f'erreur imprévue ({type(e).__name__})')}", status_code=303)
+        return RedirectResponse(f"/comptes?erreur={quote(f'erreur imprévue ({type(e).__name__})')}", status_code=303)
     log.info("Connexion %s autorisée (%d compte(s))", c.label, len(sync.public_accounts(c)))
     # Première synchro tout de suite pour les comptes déjà associés : l'historique complet
     # n'est souvent disponible que dans l'heure qui suit l'autorisation.
@@ -126,7 +126,7 @@ def callback(code: str | None = None, state: str | None = None, error: str | Non
     except Exception:  # noqa: BLE001 - l'utilisateur pourra relancer depuis la page
         db.rollback()
         log.exception("Première synchro impossible")
-    return RedirectResponse(f"/parametres/connexions?ok={c.id}", status_code=303)
+    return RedirectResponse(f"/comptes?ok={c.id}", status_code=303)
 
 
 @router.post("/{connection_id}/accounts", response_model=ConnectionOut, dependencies=auth)

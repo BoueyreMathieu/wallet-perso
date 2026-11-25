@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from collections import Counter, defaultdict
 from datetime import date, timedelta
+from typing import NamedTuple
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -21,6 +22,38 @@ log = logging.getLogger("wallet.recurrents")
 WINDOW_DAYS = 430  # un peu plus d'un an : deux échéances annuelles
 MATCH_TOLERANCE = 0.35  # un montant à ±35 % reste la même série (hausse de prix, salaire variable)
 ACTIVE_STATUSES = ("suggere", "actif")
+
+
+class _Tx(NamedTuple):
+    id: int
+    account_id: int
+    merchant_id: int | None
+    booked_at: date
+    amount_cents: int
+    is_transfer: bool
+    category_id: int | None
+
+
+def _partial_purchases(db: Session) -> dict[int, int]:
+    """Achats PayPal rapprochés « en partie » (le solde PayPal a complété) → compte de la ligne bancaire.
+    La dépense est comptée sur l'achat (montant complet) : pour la récurrence, il tient lieu de prélèvement bancaire."""
+    out: dict[int, int] = {}
+    q = select(Transaction.account_id, Transaction.linked_id, Transaction.details).where(
+        Transaction.linked_id.is_not(None), Transaction.counted.is_(False)
+    )
+    for account_id, purchase_id, details in db.execute(q):
+        if (details or {}).get("partiel"):
+            out[purchase_id] = account_id
+    return out
+
+
+def _bank_homes(series: list[RecurringSeries], paypal: set[int]) -> dict[tuple, list[tuple[int, int]]]:
+    """(vendeur, sens) → [(compte bancaire, montant attendu)] des séries par vendeur suivies hors PayPal."""
+    out: dict[tuple, list[tuple[int, int]]] = defaultdict(list)
+    for s in series:
+        if s.basis == "vendeur" and s.merchant_id is not None and s.account_id is not None and s.account_id not in paypal and s.status in ACTIVE_STATUSES:
+            out[(s.merchant_id, s.expected_amount_cents > 0)].append((s.account_id, s.expected_amount_cents))
+    return out
 
 
 def _close(a: int, b: int) -> bool:
@@ -84,13 +117,27 @@ def refresh(db: Session, today: date | None = None) -> dict:
             Transaction.amount_cents, Transaction.is_transfer, Transaction.category_id,
         ).where(Transaction.booked_at >= lo, Transaction.counted.is_(True), Transaction.amount_cents != 0)
     ).all()
-    info = {r.id: r for r in rows if r.account_id not in archived}
-
     series = list(db.scalars(select(RecurringSeries)).all())
     # Séries détectées dont le vendeur / la catégorie a disparu (fusion, suppression) : la détection les recréera.
     for s in [s for s in series if s.source == "auto" and _key(s) is None]:
         _delete(db, s)
         series.remove(s)
+
+    paypal = set(db.scalars(select(Account.id).where(Account.type == "paypal")))
+    on_bank = _partial_purchases(db)
+    homes = _bank_homes(series, paypal)
+    info: dict[int, _Tx] = {}
+    for r in rows:
+        account_id = on_bank.get(r.id, r.account_id)
+        if account_id in paypal and r.merchant_id is not None:
+            # Achat payé entièrement avec le solde PayPal : il compte pour la série du compte bancaire (même vendeur,
+            # montant proche), sinon l'échéance paraîtrait en retard.
+            account_id = next(
+                (acc for acc, expected in homes.get((r.merchant_id, r.amount_cents > 0), []) if _close(r.amount_cents, expected)),
+                account_id,
+            )
+        if account_id not in archived:
+            info[r.id] = _Tx(r.id, account_id, r.merchant_id, r.booked_at, r.amount_cents, r.is_transfer, r.category_id)
     by_key: dict[tuple, list[RecurringSeries]] = defaultdict(list)
     for s in series:
         k = _key(s)

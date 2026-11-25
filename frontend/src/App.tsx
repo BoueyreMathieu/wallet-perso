@@ -10,6 +10,7 @@ import Categories from "./pages/Categories";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
 import Merchants from "./pages/Merchants";
+import Patrimoine from "./pages/Patrimoine";
 import Planning from "./pages/Planning";
 import Recap from "./pages/Recap";
 import Settings from "./pages/Settings";
@@ -18,14 +19,16 @@ import { ThemeSwitch, ThemeToggle } from "./components/ThemeSwitch";
 import { PasswordPrompt } from "./components/PasswordPrompt";
 import { DemoBanner, DemoChip } from "./demo/DemoBanner"; // DÉMO (voir docs/demo.md)
 import { SyncOnOpen } from "./components/SyncOnOpen";
+import { clearOfflineData } from "./offline/offline";
 
 const NAV = [
   { to: "/", label: "Accueil", icon: "🏠" },
   { to: "/prevoir", label: "Prévoir", icon: "🔮" },
   { to: "/operations", label: "Opérations", icon: "💳" },
   { to: "/vendeurs", label: "Vendeurs", icon: "🏪" },
-  { to: "/categories", label: "Catégories", icon: "🗂️" },
+  { to: "/categories", label: "Catégories", icon: "🗂️", phone: false }, // téléphone : dans Réglages (barre du bas pleine)
   { to: "/comptes", label: "Comptes", icon: "🏦" },
+  { to: "/patrimoine", label: "Patrimoine", icon: "💎", short: "Avoirs" },
   { to: "/parametres", label: "Paramètres", icon: "⚙️", short: "Réglages" },
 ];
 
@@ -53,6 +56,7 @@ const DEEP_LINKS: Record<string, string> = {
   comptes: "/comptes",
   prevoir: "/prevoir",
   budgets: "/prevoir/budgets",
+  patrimoine: "/patrimoine",
   home: "/",
 };
 
@@ -101,6 +105,7 @@ export default function App() {
     if (isNative()) {
       await api.post("/auth/device/logout").catch(() => undefined); // révoque le jeton de ce téléphone
       await clearNativeSession();
+      await clearOfflineData(); // copie hors ligne effacée du téléphone
     } else {
       await api.post("/auth/logout");
     }
@@ -163,6 +168,7 @@ export default function App() {
                 <Route path="/bilan" element={<Recap />} />
                 <Route path="/vendeurs" element={<Merchants />} />
                 <Route path="/comptes" element={<Accounts />} />
+                <Route path="/patrimoine" element={<Patrimoine />} />
                 <Route path="/categories" element={<Categories />} />
                 <Route path="/parametres/*" element={<Settings onLogout={logout} />} />
                 {Object.entries(MOVED).map(([from, tab]) => (
@@ -175,7 +181,7 @@ export default function App() {
 
           {/* Barre du bas (téléphone) */}
           <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-7 border-t border-slate-200/70 bg-panel/95 safe-bottom backdrop-blur sm:hidden dark:border-white/5 dark:bg-panel-dark/95">
-            {NAV.map((n) => (
+            {NAV.filter((n) => !("phone" in n && n.phone === false)).map((n) => (
               <NavLink
                 key={n.to}
                 to={n.to}

@@ -1,5 +1,6 @@
 import { apiBase, authHeader } from "./native";
 import { demoActive, demoAnswer } from "./demo/demo"; // DÉMO (voir docs/demo.md)
+import { offlineActive, offlineAnswer, remember } from "./offline/offline";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -23,17 +24,23 @@ async function errorMessage(res: Response): Promise<string> {
   }
 }
 
-/** DÉMO (voir docs/demo.md) : serveur injoignable → réponse du jeu de données fictif, si l'appli en a un. */
-async function fromDemo<T>(method: string, path: string, confirmOffline: boolean, networkError: ApiError): Promise<T> {
-  const demo = await demoAnswer(method, path, confirmOffline);
-  if (!demo) throw networkError;
-  if ("error" in demo) throw new ApiError(0, demo.error);
-  return demo.data as T;
+/** Serveur injoignable → tes dernières données gardées sur le téléphone (hors ligne), sinon le jeu de données
+ *  fictif (DÉMO, voir docs/demo.md), sinon l'erreur réseau. */
+async function fallback<T>(method: string, path: string, body: unknown, confirmOffline: boolean, networkError: ApiError): Promise<T> {
+  const answer = (await offlineAnswer(method, path, body, confirmOffline)) ?? (await demoAnswer(method, path, confirmOffline));
+  if (!answer) throw networkError;
+  if ("error" in answer) throw new ApiError(0, answer.error);
+  return answer.data as T;
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const offline = new ApiError(0, "Serveur injoignable (réseau, Tailscale ou serveur éteint ?)");
-  if (demoActive()) return fromDemo<T>(method, path, false, offline); // DÉMO
+  if (demoActive()) {
+    const demo = await demoAnswer(method, path, false); // DÉMO
+    if (demo && "data" in demo) return demo.data as T;
+    throw demo ? new ApiError(0, demo.error) : offline;
+  }
+  if (offlineActive()) return fallback<T>(method, path, body, false, offline);
   const send = async (confirm?: string) => {
     try {
       return await fetch(`${apiBase()}/api${path}`, {
@@ -56,7 +63,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   try {
     res = await send();
   } catch (e) {
-    if (e === offline) return fromDemo<T>(method, path, true, offline); // DÉMO
+    if (e === offline) return fallback<T>(method, path, body, true, offline);
     throw e;
   }
   // Action sensible (suppression, remise à zéro…) : le serveur redemande le mot de passe.
@@ -71,7 +78,10 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     }
   }
   if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
-  return res.status === 204 ? (undefined as T) : res.json();
+  if (res.status === 204) return undefined as T;
+  const data = await res.json();
+  remember(method, path, body, data); // copie hors ligne (appli Android)
+  return data as T;
 }
 
 export const api = {
@@ -97,6 +107,24 @@ export interface Account {
   balance_date: string | null;
   pending_cents: number;
   pending_count: number;
+  connection_id: number | null;
+  connection_label: string | null;
+  connection_status: string | null;
+  last_sync_at: string | null;
+  /** Écart entre le solde de la banque et les opérations (0 : cohérent ; null : pas contrôlé). */
+  balance_gap_cents: number | null;
+  balance_gap_since: string | null;
+}
+
+/** Alerte du moment (appli + notifications du téléphone). */
+export interface AlertItem {
+  key: string;
+  kind: "budgets" | "tresorerie" | "banque" | "revenus" | "autres";
+  level: "info" | "warning" | "danger";
+  title: string;
+  body: string;
+  link: string;
+  deep: string;
 }
 
 /** Opération « à venir » vue à la banque (pas encore comptabilisée). */
@@ -391,6 +419,8 @@ export interface BudgetItem {
   pace_cents: number;
   remaining_cents: number;
   level: "ok" | "alerte" | "depasse";
+  /** Budget d'une catégorie principale : dépensé ce mois par sous-catégorie (et « général »). */
+  children?: { category_id: number; spent_cents: number }[];
 }
 
 export interface BudgetsOverview {
@@ -646,4 +676,96 @@ export interface AdvanceItem {
   settled_on: string | null;
   settled_label: string | null;
   parent_id: number | null;
+}
+
+// --- Projets, contrats, comparaison annuelle, patrimoine ----------------------------------------------
+
+export interface Project {
+  id: number;
+  tag_id: number;
+  name: string;
+  color: string | null;
+  budget_cents: number | null;
+  start_date: string | null;
+  end_date: string | null;
+  note: string | null;
+  archived: boolean;
+  spent_cents: number;
+  refunds_cents: number;
+  net_cents: number;
+  count: number;
+  remaining_cents: number | null;
+  level: "ok" | "alerte" | "depasse";
+  days_left: number | null;
+  first_date: string | null;
+  last_date: string | null;
+  by_category: { category_id: number | null; net_cents: number }[];
+  by_month: { month: string; net_cents: number }[];
+}
+
+export interface Contract {
+  id: number;
+  label: string;
+  recurring_id: number | null;
+  recurring_label: string | null;
+  frequency: string | null;
+  amount_cents: number | null;
+  amount_from_recurring: boolean;
+  renewal_date: string;
+  notice_days: number;
+  renew_months: number | null;
+  note: string | null;
+  deadline: string;
+  days_to_deadline: number;
+  state: "ok" | "bientot" | "engage" | "termine";
+}
+
+export interface CompareCategory {
+  category_id: number | null;
+  parent_id: number | null;
+  cur_cents: number;
+  prev_cents: number;
+  diff_cents: number;
+  diff_pct: number | null;
+}
+
+export interface CompareResult {
+  mode: "ytd" | "rolling";
+  current: { start: string; end: string };
+  previous: { start: string; end: string };
+  spent_cents: number;
+  prev_spent_cents: number;
+  income_cents: number;
+  prev_income_cents: number;
+  categories: CompareCategory[];
+  months: { month: string; cur_cents: number; prev_cents: number }[];
+}
+
+export interface WealthAccount {
+  id: number;
+  name: string;
+  type: AccountType;
+  balance_cents: number;
+  in_net_worth: boolean;
+  params: Record<string, string | number>;
+  details: {
+    // bien
+    purchase_cents?: number; purchase_date?: string; depreciation_pct?: number; loss_cents?: number; yearly_loss_cents?: number;
+    // crédit
+    principal_cents?: number; months?: number; first_payment?: string; insurance_cents?: number; monthly_payment_cents?: number;
+    end_date?: string | null; remaining_cents?: number; paid_pct?: number; interest_left_cents?: number; payments_left?: number;
+    schedule?: { n: number; date: string; payment_cents: number; interest_cents: number; principal_cents: number; remaining_cents: number }[];
+    // épargne (et crédit : taux)
+    rate_pct?: number; ceiling_cents?: number | null; yearly_interest_cents?: number; room_cents?: number | null; at_ceiling?: boolean;
+  };
+}
+
+export interface Patrimoine {
+  today: string;
+  assets_cents: number;
+  debts_cents: number;
+  net_worth_cents: number;
+  yearly_interest_cents: number;
+  accounts: WealthAccount[];
+  history: { month: string; net_worth_cents: number }[];
 }

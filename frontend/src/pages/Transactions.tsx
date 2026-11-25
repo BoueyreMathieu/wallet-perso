@@ -20,7 +20,10 @@ export default function Transactions() {
     const v = initial().get("categorie");
     return v ? Number(v) : null;
   });
-  const [tagId, setTagId] = useState<number | null>(null);
+  const [tagId, setTagId] = useState<number | null>(() => {
+    const v = initial().get("etiquette"); // lien depuis Prévoir › Projets
+    return v && /^\d+$/.test(v) ? Number(v) : null;
+  });
   const [onlyUncategorized, setOnlyUncategorized] = useState(() => initial().get("a_categoriser") === "1");
   const [range, setRange] = useState<[string, string] | null>(() => {
     const p = initial();
@@ -468,6 +471,9 @@ function EditPanel({
             ))}
         </dl>
       )}
+      {Number(t.details?.solde_paypal_cents) > 0 && (
+        <p className="text-xs text-slate-500">Payé en partie avec le solde PayPal : {formatCents(Number(t.details?.solde_paypal_cents))} sur cet achat.</p>
+      )}
       {t.pair_account && (
         <p className="text-xs text-slate-500">
           Virement entre tes comptes ({t.amount_cents < 0 ? "vers" : "depuis"} « {t.pair_account} ») : exclu des dépenses et des revenus.
@@ -485,9 +491,11 @@ function EditPanel({
             ? " : elle est découpée, ce sont ses parts qui comptent."
             : t.details?.remboursement_de
               ? " : c'est un remboursement d'avance (pas un revenu)."
-              : t.linked_id
-                ? " : la dépense est déjà comptée sur l'opération bancaire rapprochée."
-                : " (mouvement technique)."}
+              : t.details?.partiel
+                ? " : le solde PayPal a complété ce paiement, la dépense (montant complet) est comptée sur l'achat PayPal rapproché."
+                : t.linked_id
+                  ? " : la dépense est déjà comptée sur l'opération bancaire rapprochée."
+                  : " (mouvement technique)."}
         </p>
       )}
 

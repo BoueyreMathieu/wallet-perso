@@ -97,6 +97,8 @@ class Account(Base):
     include_in_net_worth: Mapped[bool] = mapped_column(Boolean, default=True)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Patrimoine (app/wealth.py) : bien (achat, dépréciation), crédit (capital, taux, durée), épargne (taux, plafond).
+    params: Mapped[dict | None] = mapped_column(JSON)
 
     connection: Mapped[Connection | None] = relationship(back_populates="accounts")
     balances: Mapped[list["BalanceSnapshot"]] = relationship(
@@ -336,6 +338,42 @@ class Tag(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(50), unique=True)
     color: Mapped[str | None] = mapped_column(String(7))
+
+
+class Project(Base):
+    """Projet suivi par étiquette (« Voyage », « Travaux »…) : budget total facultatif, dates facultatives."""
+
+    __tablename__ = "project"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tag_id: Mapped[int] = mapped_column(ForeignKey("tag.id", ondelete="CASCADE"), unique=True)
+    budget_cents: Mapped[int | None] = mapped_column(BigInteger)
+    start_date: Mapped[date | None] = mapped_column(Date)
+    end_date: Mapped[date | None] = mapped_column(Date)
+    note: Mapped[str | None] = mapped_column(String(300))
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    tag: Mapped["Tag"] = relationship()
+
+
+class Contract(Base):
+    """Contrat (assurance, box, énergie…) : échéance / renouvellement, préavis de résiliation, reconduction tacite.
+    Rattaché à un récurrent quand il y en a un (montant, vendeur), sinon autonome."""
+
+    __tablename__ = "contract"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    label: Mapped[str] = mapped_column(String(150))
+    recurring_id: Mapped[int | None] = mapped_column(ForeignKey("recurring_series.id", ondelete="SET NULL"))
+    renewal_date: Mapped[date] = mapped_column(Date)
+    notice_days: Mapped[int] = mapped_column(Integer, default=30, server_default="30")
+    renew_months: Mapped[int | None] = mapped_column(Integer)  # reconduction tacite (12 = chaque année) ; None = s'arrête
+    amount_cents: Mapped[int | None] = mapped_column(BigInteger)
+    note: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    recurring: Mapped["RecurringSeries | None"] = relationship()
 
 
 class DeviceToken(Base):

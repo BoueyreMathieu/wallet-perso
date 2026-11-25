@@ -43,6 +43,13 @@ class AccountOut(BaseModel):
     balance_date: date | None
     pending_cents: int = 0  # opérations « à venir » (pas encore comptabilisées)
     pending_count: int = 0
+    # Synchro bancaire (page Comptes) : connexion, état, et contrôle de cohérence du solde.
+    connection_id: int | None = None
+    connection_label: str | None = None
+    connection_status: str | None = None
+    last_sync_at: dt.datetime | None = None
+    balance_gap_cents: int | None = None  # écart solde banque / opérations (0 : cohérent ; None : pas contrôlé)
+    balance_gap_since: date | None = None
 
 
 class BalanceIn(BaseModel):

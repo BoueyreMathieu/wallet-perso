@@ -45,6 +45,8 @@ _USER_TABLES = (
     "DELETE FROM transaction_tag",
     "DELETE FROM merchant_tag",
     "DELETE FROM rule_tag",
+    "DELETE FROM project",
+    "DELETE FROM contract",
     "DELETE FROM tag",
     'DELETE FROM "transaction"',
     "DELETE FROM import_batch",
@@ -60,7 +62,7 @@ _USER_TABLES = (
     "DELETE FROM connection",
     "DELETE FROM device_token",
     "DELETE FROM security_event",
-    "DELETE FROM app_meta WHERE key IN ('owner_signatures', 'hidden_default_categories', 'category_aliases', 'backup_last_ok', 'backup_last_error', 'advice_dismissed', 'global_budget_cents', 'payday', 'home_layout_web', 'home_layout_mobile')",
+    "DELETE FROM app_meta WHERE key IN ('owner_signatures', 'hidden_default_categories', 'category_aliases', 'backup_last_ok', 'backup_last_error', 'advice_dismissed', 'global_budget_cents', 'payday', 'home_layout_web', 'home_layout_mobile', 'notify_kinds', 'balance_check_from')",
 )
 
 

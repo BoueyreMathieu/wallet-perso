@@ -129,6 +129,8 @@ interface Option {
 interface Group {
   parent: Category;
   children: Category[];
+  /** Catégorie principale exclue (ex. déjà budgétée) : on ne peut pas la choisir, mais ses sous-catégories restent. */
+  locked: boolean;
 }
 
 /** Choix d'une catégorie : grand panneau avec toutes les catégories d'un coup (groupées), recherche
@@ -139,12 +141,16 @@ export function CategorySelect({
   emptyLabel = "— Non catégorisé —",
   className = "input",
   exclude = [],
+  keepChildren = false,
 }: {
   value: number | null;
   onChange: (id: number | null) => void;
   emptyLabel?: string;
   className?: string;
   exclude?: number[];
+  /** Une catégorie principale exclue garde ses sous-catégories choisissables (ex. budget sur « Livraison » quand
+   *  « Alimentation » a déjà le sien). Sinon, l'exclure retire aussi ses sous-catégories. */
+  keepChildren?: boolean;
 }) {
   const { categories, iconOf, pathOf, colorOf } = useCategories();
   const [open, setOpen] = useState(false);
@@ -162,12 +168,14 @@ export function CategorySelect({
     const excluded = excludeKey ? excludeKey.split(",").map(Number) : [];
     const visible = categories.filter((c) => !excluded.includes(c.id));
     const groups: Group[] = [];
-    for (const p of visible.filter((c) => c.parent_id === null)) {
+    for (const p of categories.filter((c) => c.parent_id === null)) {
+      const locked = excluded.includes(p.id);
       const kids = visible.filter((c) => c.parent_id === p.id);
-      if (!q || fold(p.name).includes(q)) groups.push({ parent: p, children: kids });
+      if (locked && (!keepChildren || kids.length === 0)) continue;
+      if (!q || fold(p.name).includes(q)) groups.push({ parent: p, children: kids, locked });
       else {
         const hits = kids.filter((c) => fold(c.name).includes(q));
-        if (hits.length) groups.push({ parent: p, children: hits });
+        if (hits.length) groups.push({ parent: p, children: hits, locked });
       }
     }
     const recent = q ? [] : readRecent().filter((id) => visible.some((c) => c.id === id));
@@ -176,12 +184,12 @@ export function CategorySelect({
     if (!q) flat.push({ id: null, label: emptyLabel });
     for (const id of recent) flat.push({ id, label: pathOf(id) });
     for (const g of groups) {
-      flat.push({ id: g.parent.id, label: g.parent.name });
+      if (!g.locked) flat.push({ id: g.parent.id, label: g.parent.name });
       for (const c of g.children) flat.push({ id: c.id, label: c.name });
     }
     return { groups, recent, flat };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [categories, excludeKey, query, emptyLabel, pathOf, open]);
+  }, [categories, excludeKey, keepChildren, query, emptyLabel, pathOf, open]);
 
   // Pendant une recherche, le curseur part sur le premier résultat qui n'est pas une catégorie principale.
   useEffect(() => {
@@ -283,7 +291,7 @@ export function CategorySelect({
               <button
                 type="button"
                 className="flex w-full items-center gap-3 py-3 text-left"
-                onClick={() => (g.children.length === 0 ? choose(g.parent.id) : setExpanded(expanded === g.parent.id ? null : g.parent.id))}
+                onClick={() => (g.children.length === 0 && !g.locked ? choose(g.parent.id) : setExpanded(expanded === g.parent.id ? null : g.parent.id))}
               >
                 <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-lg" style={{ background: `${colorOf(g.parent.id)}26` }} aria-hidden>
                   {iconOf(g.parent.id)}
@@ -294,7 +302,7 @@ export function CategorySelect({
               </button>
               {isOpen && g.children.length > 0 && (
                 <div className="grid grid-cols-2 gap-1.5 pb-3 pl-12">
-                  {item(g.parent.id, <><span className="truncate">Tout « {g.parent.name} »</span></>, `${chip} col-span-2 justify-center py-2`)}
+                  {!g.locked && item(g.parent.id, <><span className="truncate">Tout « {g.parent.name} »</span></>, `${chip} col-span-2 justify-center py-2`)}
                   {g.children.map((c) => item(c.id, <><span aria-hidden>{iconOf(c.id)}</span> <span className="truncate">{c.name}</span></>, `${chip} py-2`))}
                 </div>
               )}
@@ -361,14 +369,21 @@ export function CategorySelect({
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {groups.map((g) => (
                     <div key={g.parent.id} className="rounded-xl border border-slate-100 p-2 dark:border-white/5" style={{ borderTopColor: colorOf(g.parent.id), borderTopWidth: 3 }}>
-                      {item(
-                        g.parent.id,
-                        <>
+                      {g.locked ? (
+                        <div className="mb-1 flex w-full items-center gap-1.5 px-2 py-1 text-sm font-semibold opacity-60">
                           <span aria-hidden>{iconOf(g.parent.id)}</span>
                           <span className="min-w-0 flex-1 truncate">{g.parent.name}</span>
-                          <span className="muted text-[10px] font-normal">général</span>
-                        </>,
-                        "mb-1 flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left text-sm font-semibold hover:bg-slate-100 dark:hover:bg-white/5",
+                        </div>
+                      ) : (
+                        item(
+                          g.parent.id,
+                          <>
+                            <span aria-hidden>{iconOf(g.parent.id)}</span>
+                            <span className="min-w-0 flex-1 truncate">{g.parent.name}</span>
+                            <span className="muted text-[10px] font-normal">général</span>
+                          </>,
+                          "mb-1 flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left text-sm font-semibold hover:bg-slate-100 dark:hover:bg-white/5",
+                        )
                       )}
                       <div className="flex flex-wrap gap-1">
                         {g.children.map((c) => item(c.id, <><span aria-hidden>{iconOf(c.id)}</span> <span className="truncate">{c.name}</span></>, chip))}

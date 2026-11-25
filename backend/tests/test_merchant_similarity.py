@@ -1,6 +1,6 @@
 """Relation entre noms de vendeurs (pur Python, noms inventés)."""
 
-from app.merchant_similarity import core, relation
+from app.merchant_similarity import core, name_alias, relation
 
 
 def test_core_strips_trailing_references():
@@ -29,3 +29,9 @@ def test_bank_operation_prefixes_are_not_a_shared_name():
     assert relation("Virement Emis Vers Monsieur Testeur Jea", "Virement Emis Vers Madame Exemple") is None
     assert relation("Virement Emis Vers Monsieur Testeur Jea", "Monsieur Testeur Jean") == "sure"
     assert relation("Paiement Par Carte X1234 01/11", "Paiement Par Carte X5678 03/11") is None  # aucun vendeur
+
+
+def test_name_alias_ignores_references_and_case():
+    assert name_alias("Carrefour City 1234") == name_alias("CARREFOUR CITY 5678") == "nom:CARREFOUR CITY"
+    assert name_alias("") is None
+    assert name_alias("Ab") is None  # trop court pour désigner un vendeur

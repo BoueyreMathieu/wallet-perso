@@ -278,7 +278,7 @@ def housekeeping(ctx: Context) -> list[Advice]:
         if days <= 14:
             out.append(Advice(
                 f"consentement:{label}", "menage", "alerte" if days <= 3 else "info", "🔑", f"Autorisation {label} bientôt expirée",
-                f"Plus que {max(days, 0)} jour(s) : renouvelle-la pour que la synchro continue.", 0, _link("/parametres/connexions", "Renouveler"),
+                f"Plus que {max(days, 0)} jour(s) : renouvelle-la pour que la synchro continue.", 0, _link("/comptes", "Renouveler"),
             ))
     if ctx.uncategorized >= 10:
         out.append(Advice("a_categoriser", "menage", "info", "🏷️", f"{ctx.uncategorized} opérations à catégoriser",

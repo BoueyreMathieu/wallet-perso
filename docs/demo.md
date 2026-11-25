@@ -1,13 +1,21 @@
-# Mode démo (données de test quand le serveur est injoignable)
+# Mode démo (données de test)
 
-Quand l'appli (Android ou navigateur) n'arrive pas à joindre le serveur, elle affiche un **jeu de données fictif**
-au lieu d'une erreur :
+Le jeu de données fictif s'affiche dans deux cas :
+
+- **à la main**, à tout moment : bouton 🧪 « Données de test » sur l'accueil (mémorisé sur l'appareil ; « Revenir à
+  mes données » dans le bandeau pour en sortir) ;
+- **automatiquement**, quand le serveur est injoignable **et** que l'appareil n'a pas de copie hors ligne de tes
+  vraies données (navigateur, ou appli Android jamais utilisée connectée). Sinon, c'est le mode hors ligne qui
+  s'affiche : voir `docs/hors-ligne.md`.
+
+Ce qu'on voit alors :
 
 - un bandeau 🧪 « Données de test » et une pastille **TEST** dans l'en-tête ;
 - trois comptes à part : « Compte courant (démo) », « Livret A (démo) », « PayPal (démo) », avec ~14 mois
   d'opérations inventées ;
 - lecture seule : modifier, catégoriser ou supprimer affiche « Mode démo : rien n'est enregistré » ;
-- dès que le serveur répond (vérifié toutes les 15 s), l'appli se recharge et les vraies données reprennent leur place.
+- en automatique : dès que le serveur répond (vérifié toutes les 15 s), l'appli se recharge et les vraies données
+  reprennent leur place.
 
 Avant de passer en démo, l'appli vérifie que le serveur est vraiment injoignable (pas seulement lent).
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, NATURE_LABELS, Nature, Recap as RecapData } from "../api";
 import { CategoryIcon } from "../components/categories";
+import { YearCompare } from "../components/compare";
 import { LAYER_COLORS } from "../components/charts";
 import { formatCents, isoDate } from "../format";
 import { apiBase, authHeader, isNative } from "../native";
@@ -42,8 +43,28 @@ async function download(params: Record<string, string>) {
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
-/** Bilan d'un mois : l'essentiel en chiffres, ce qui a changé, et l'export. */
+/** Bilan : le mois (par défaut) ou la comparaison avec l'an dernier (?vue=annee). */
 export default function Recap() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const year = new URLSearchParams(location.search).get("vue") === "annee";
+  return (
+    <div className="space-y-4">
+      <nav className="flex gap-2">
+        {[{ y: false, label: "📅 Le mois" }, { y: true, label: "📆 Comparer à l'an dernier" }].map((t) => (
+          <button key={t.label} onClick={() => navigate(t.y ? "/bilan?vue=annee" : "/bilan")}
+            className={`chip shrink-0 px-3 py-1.5 text-sm ${year === t.y ? "bg-accent-600 text-white" : "bg-panel text-slate-600 shadow-soft dark:bg-panel-dark dark:text-slate-300"}`}>
+            {t.label}
+          </button>
+        ))}
+      </nav>
+      {year ? <YearCompare /> : <MonthRecap />}
+    </div>
+  );
+}
+
+/** Bilan d'un mois : l'essentiel en chiffres, ce qui a changé, et l'export. */
+function MonthRecap() {
   const location = useLocation();
   const navigate = useNavigate();
   const month = new URLSearchParams(location.search).get("mois") ?? previousMonth();

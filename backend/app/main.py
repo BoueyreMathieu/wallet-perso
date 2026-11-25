@@ -1,11 +1,12 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager, suppress
+from datetime import date
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import accounts, advice, auth, categories, connections, dashboard, data, goals, imports, merchants, planning, reports, settings, splits, tags, transactions, widgets
+from app.api import accounts, advice, alerts, auth, categories, connections, dashboard, data, goals, imports, merchants, planning, projects, reports, settings, splits, tags, transactions, widgets
 from app.config import get_settings
 from app.db import get_sessionmaker
 from app.log_filters import MaskQueryFilter
@@ -58,6 +59,9 @@ def _catch_up(db) -> None:
         if n_fixed:
             log.info("Démarrage : vendeur recalculé pour %d opération(s) au libellé bancaire générique", n_fixed)
         n_merge = auto_merge(db)
+        from app.services.wealth import refresh_valuations
+
+        refresh_valuations(db, date.today())  # biens et crédits réglés : valeur du jour
         n_pp, n_vir = reconcile_paypal(db), detect(db)
         db.commit()
         from app.services.recurring import refresh as refresh_recurring
@@ -150,6 +154,8 @@ app.include_router(advice.router)
 app.include_router(reports.router)
 app.include_router(goals.router)
 app.include_router(splits.router)
+app.include_router(alerts.router)
+app.include_router(projects.router)
 
 
 @app.get("/api/health", tags=["système"])

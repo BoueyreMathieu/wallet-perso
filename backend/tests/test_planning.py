@@ -254,3 +254,12 @@ def test_recurring_end_date_stops_forecast(auth_client):
     bad = c.post("/api/recurring", json={"label": "X", "account_id": acc["id"], "amount_cents": -100, "frequency": "mensuel",
                                          "next_date": first.isoformat(), "end_date": past})
     assert bad.status_code == 422
+
+
+def test_projection_current_month_counts_what_already_happened(auth_client):
+    """Le mois en cours additionne le déjà passé (du 1er à aujourd'hui) et le reste à venir, pas seulement le reste."""
+    c = auth_client
+    acc, cats, op = _setup(c)
+    op(date.today(), -4200, "CB EPICERIE INVENTEE", merchant="Épicerie inventée", category=cats["Courses"]["id"])
+    m0 = c.get("/api/projection", params={"months": 2}).json()["months"][0]
+    assert m0["partial"] and m0["essentiel_cents"] >= 4200 and m0["net_cents"] <= -4200

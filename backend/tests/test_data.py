@@ -67,6 +67,30 @@ def test_rename_and_merge(auth_client, ca):
     assert tx["total"] == 4
 
 
+def test_merged_merchant_name_is_remembered(auth_client, ca):
+    """Une opération qui arrive plus tard sous le nom d'un vendeur déjà fusionné rejoint le vendeur gardé."""
+    from app.db import get_sessionmaker
+    from app.services.merchant_resolver import MerchantResolver
+
+    ms = _merchants(auth_client)
+    assert auth_client.post(f"/api/merchants/{ms['Monoprix']['id']}/merge", json={"into_id": ms["Bar du Coin Paris"]["id"]}).status_code == 200
+    ms = _merchants(auth_client)
+    assert "Monoprix" not in ms
+    with get_sessionmaker()() as db:
+        resolver = MerchantResolver(db)
+        assert resolver.lookup("Monoprix") == "Bar du Coin Paris"
+        assert resolver.lookup("MONOPRIX 1234") == "Bar du Coin Paris"
+        assert resolver(" Monoprix ").id == ms["Bar du Coin Paris"]["id"]  # aucun nouveau vendeur créé
+        db.rollback()
+    assert "Monoprix" not in _merchants(auth_client)
+
+    # Renommer un vendeur : l'ancien nom reste reconnu.
+    bar = _merchants(auth_client)["Bar du Coin Paris"]
+    auth_client.patch(f"/api/merchants/{bar['id']}", json={"name": "Bar du Coin"})
+    with get_sessionmaker()() as db:
+        assert MerchantResolver(db).lookup("Bar du Coin Paris") == "Bar du Coin"
+
+
 def test_undo_import(auth_client, ca):
     imports = auth_client.get("/api/data/imports").json()
     assert imports[0]["rows_imported"] == 10 and imports[0]["account_name"] == "CA"

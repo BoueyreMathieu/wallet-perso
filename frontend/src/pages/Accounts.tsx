@@ -1,5 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { Account, AccountType, api } from "../api";
+import { BankPicker, Conn, ConnectionHeader, UnlinkedBankAccounts, useBankConnections } from "../components/bankConnections";
 import { ACCOUNT_TYPE_LABELS, formatCents, formatDate, parseEuros } from "../format";
 
 const TYPES = Object.keys(ACCOUNT_TYPE_LABELS) as AccountType[];
@@ -13,6 +15,11 @@ export default function Accounts() {
   useEffect(() => {
     load();
   }, []);
+  const bank = useBankConnections(load);
+
+  const linked = new Set(bank.conns.flatMap((c) => c.accounts.map((a) => a.account_id)).filter((id): id is number => id !== null));
+  const byConnection = (c: Conn) => accounts.filter((a) => c.accounts.some((r) => r.account_id === a.id));
+  const others = accounts.filter((a) => !linked.has(a.id));
 
   return (
     <div className="space-y-4">
@@ -23,6 +30,8 @@ export default function Accounts() {
         </button>
       </div>
 
+      {bank.msg && <p className={`card text-sm ${bank.msg.error ? "text-red-600" : ""}`}>{bank.msg.text}</p>}
+
       {showForm && (
         <NewAccountForm
           onCreated={() => {
@@ -32,19 +41,57 @@ export default function Accounts() {
         />
       )}
 
-      <p className="text-xs text-slate-500">
-        Solde affiché = dernier solde connu (import bancaire ou mise à jour à la main) + opérations datées après.
-      </p>
+      {bank.conns.map((c) => (
+        <section key={c.id} className="card space-y-3">
+          <ConnectionHeader
+            c={c}
+            busy={bank.busy === c.id}
+            onSync={() => bank.syncNow(c)}
+            onRenew={() => bank.start(c.label, c.id)}
+            onRemove={() => bank.remove(c)}
+          />
+          <ul className="space-y-2">
+            {byConnection(c).map((a) => (
+              <AccountRow
+                key={a.id}
+                account={a}
+                onChange={load}
+                onUnlink={() => {
+                  const uid = c.accounts.find((r) => r.account_id === a.id)?.uid;
+                  if (uid && confirm(`Ne plus synchroniser « ${a.name} » ? Le compte et ses opérations sont gardés.`)) bank.mapAccount(c, uid, "");
+                }}
+              />
+            ))}
+          </ul>
+          <UnlinkedBankAccounts c={c} accounts={accounts} onMap={(uid, value) => bank.mapAccount(c, uid, value)} />
+        </section>
+      ))}
 
-      {accounts.length === 0 && !showForm && (
-        <p className="card text-sm text-slate-500">Aucun compte. Commence par ton compte courant Crédit Agricole.</p>
+      <section className="space-y-2">
+        {bank.conns.length > 0 && others.length > 0 && <h2 className="section-title px-1">✋ Comptes sans synchro</h2>}
+        <p className="px-1 text-xs text-slate-500">
+          Solde affiché = dernier solde connu (synchro, import ou mise à jour à la main) + opérations datées après.
+        </p>
+        {accounts.length === 0 && !showForm && (
+          <p className="card text-sm text-slate-500">Aucun compte. Connecte ta banque ci-dessous, ou ajoute un compte à la main.</p>
+        )}
+        <ul className="space-y-2">
+          {others.map((a) => (
+            <AccountRow key={a.id} account={a} onChange={load} />
+          ))}
+        </ul>
+      </section>
+
+      {bank.config?.configured ? (
+        <BankPicker onPick={(name) => bank.start(name)} syncHours={bank.config.sync_interval_hours} />
+      ) : (
+        bank.config && (
+          <p className="card text-sm">
+            🔗 Pour synchroniser tes banques automatiquement, configure d'abord Enable Banking :{" "}
+            <Link to="/parametres/connexions" className="font-medium text-accent-600 hover:underline dark:text-accent-300">Paramètres › Connexions</Link>.
+          </p>
+        )
       )}
-
-      <ul className="space-y-2">
-        {accounts.map((a) => (
-          <AccountRow key={a.id} account={a} onChange={load} />
-        ))}
-      </ul>
     </div>
   );
 }
@@ -103,7 +150,7 @@ function NewAccountForm({ onCreated }: { onCreated: () => void }) {
   );
 }
 
-function AccountRow({ account: a, onChange }: { account: Account; onChange: () => void }) {
+function AccountRow({ account: a, onChange, onUnlink }: { account: Account; onChange: () => void; onUnlink?: () => void }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState("");
 
@@ -113,6 +160,11 @@ function AccountRow({ account: a, onChange }: { account: Account; onChange: () =
     if (cents === null) return;
     await api.post(`/accounts/${a.id}/balances`, { date: today(), balance_cents: cents });
     setEditing(false);
+    onChange();
+  };
+
+  const checked = async () => {
+    await api.post(`/accounts/${a.id}/balance-check/ok`);
     onChange();
   };
 
@@ -129,8 +181,10 @@ function AccountRow({ account: a, onChange }: { account: Account; onChange: () =
           <p className="truncate font-medium">{a.name}</p>
           <p className="text-sm text-slate-500">
             {ACCOUNT_TYPE_LABELS[a.type]}
-            {a.institution && ` · ${a.institution}`}
+            {a.institution && !a.connection_id && ` · ${a.institution}`}
+            {!a.connection_id && " · ✋ à la main ou par import"}
           </p>
+          {a.balance_gap_cents === 0 && <p className="text-xs text-emerald-700 dark:text-emerald-400">✓ Cohérent avec la banque</p>}
         </div>
         <div className="text-right">
           <p className={`font-semibold tabular-nums ${(a.balance_cents ?? 0) < 0 ? "text-red-600" : ""}`}>
@@ -145,6 +199,16 @@ function AccountRow({ account: a, onChange }: { account: Account; onChange: () =
         </div>
       </div>
 
+      {a.balance_gap_cents != null && a.balance_gap_cents !== 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-500/10 dark:text-amber-100">
+          <span className="min-w-0 flex-1">
+            🧮 Le solde de la banque et tes opérations diffèrent de <b>{formatCents(a.balance_gap_cents)}</b>
+            {a.balance_gap_since ? ` depuis le ${formatDate(a.balance_gap_since)}` : ""} : une opération manque ({a.balance_gap_cents > 0 ? "une rentrée" : "une dépense"}) ou est en double ?
+          </span>
+          <button className="btn-ghost px-2 py-1 text-xs font-semibold" onClick={checked}>J'ai vérifié</button>
+        </div>
+      )}
+
       {editing ? (
         <form onSubmit={saveBalance} className="mt-3 flex gap-2">
           <input className="input" inputMode="decimal" autoFocus value={value} onChange={(e) => setValue(e.target.value)} placeholder="Nouveau solde" />
@@ -153,7 +217,8 @@ function AccountRow({ account: a, onChange }: { account: Account; onChange: () =
         </form>
       ) : (
         <div className="mt-2 flex gap-1">
-          <button className="btn-ghost" onClick={() => setEditing(true)}>Mettre à jour le solde</button>
+          {!a.connection_id && <button className="btn-ghost" onClick={() => setEditing(true)}>Mettre à jour le solde</button>}
+          {onUnlink && <button className="btn-ghost" onClick={onUnlink}>Ne plus synchroniser</button>}
           <button className="btn-ghost text-red-600" onClick={archive}>Archiver</button>
         </div>
       )}

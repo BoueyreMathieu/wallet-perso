@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { demoActive } from "../demo/demo";
+import { offlineActive } from "../offline/offline";
 
 interface SyncStale {
   running: boolean;
@@ -16,7 +17,7 @@ export function SyncOnOpen() {
   useEffect(() => {
     let last = 0;
     const run = () => {
-      if (document.visibilityState !== "visible" || demoActive() || Date.now() - last < 10 * 60_000) return;
+      if (document.visibilityState !== "visible" || demoActive() || offlineActive() || Date.now() - last < 10 * 60_000) return;
       last = Date.now();
       api.post<SyncStale>("/connections/sync-stale?max_age_minutes=60").then((r) => (r.imported > 0 || r.errors.length ? setInfo(r) : undefined), () => undefined);
     };
@@ -29,7 +30,7 @@ export function SyncOnOpen() {
     <div className="fixed inset-x-3 bottom-20 z-40 mx-auto flex max-w-md items-center gap-3 rounded-2xl bg-slate-900 px-4 py-3 text-sm text-white shadow-xl sm:bottom-6 dark:bg-slate-700" role="status">
       <span className="min-w-0 flex-1">
         {info.imported > 0 && <>🔄 {info.imported} nouvelle{info.imported > 1 ? "s" : ""} opération{info.imported > 1 ? "s" : ""} synchronisée{info.imported > 1 ? "s" : ""}. </>}
-        {info.errors.length > 0 && <>⚠️ Synchro impossible : {info.errors.map((e) => e.label).join(", ")} (voir Réglages › Connexions).</>}
+        {info.errors.length > 0 && <>⚠️ Synchro impossible : {info.errors.map((e) => e.label).join(", ")} (voir Comptes).</>}
       </span>
       {info.imported > 0 && <button className="shrink-0 font-semibold text-accent-200" onClick={() => window.location.reload()}>Actualiser</button>}
       <button className="shrink-0 opacity-70" onClick={() => setInfo(null)} aria-label="Fermer">✕</button>

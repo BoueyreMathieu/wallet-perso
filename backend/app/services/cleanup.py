@@ -3,18 +3,21 @@
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app.merchant_similarity import name_alias
 from app.models import (
     Account,
     AppMeta,
     BalanceSnapshot,
-    PendingTransaction,
     Budget,
     Category,
     Connection,
+    Contract,
     Goal,
     Holding,
     ImportBatch,
     Merchant,
+    PendingTransaction,
+    Project,
     RecurringSeries,
     Rule,
     Transaction,
@@ -35,6 +38,8 @@ def _restore_bank_side(t: Transaction) -> None:
     details = dict(t.details or {})
     if "orig_merchant_id" in details:
         t.merchant_id = details["orig_merchant_id"]
+    if details.get("partiel"):
+        t.counted = True  # rapprochement partiel défait : la ligne bancaire redevient la dépense comptée
     for k in LINK_KEYS:
         details.pop(k, None)
     t.details = details or None
@@ -136,7 +141,7 @@ def wipe_all(db: Session, keep_accounts: bool) -> None:
     db.execute(delete(transaction_tag))
     db.execute(delete(merchant_tag))
     db.execute(delete(rule_tag).where(rule_tag.c.rule_id.in_(select(Rule.id).where(Rule.from_correction.is_(True)))))
-    for model in (PendingTransaction, Transaction, ImportBatch, BalanceSnapshot, RecurringSeries, Budget, Goal, Holding):
+    for model in (PendingTransaction, Transaction, ImportBatch, BalanceSnapshot, Contract, Project, RecurringSeries, Budget, Goal, Holding):
         db.execute(delete(model))
     db.execute(delete(Rule).where(Rule.from_correction.is_(True)))
     db.execute(delete(Merchant))
@@ -152,8 +157,16 @@ def wipe_all(db: Session, keep_accounts: bool) -> None:
 # --- Vendeurs : renommer / fusionner ----------------------------------------------
 
 
+def remember_name(m: Merchant, old_name: str | None) -> None:
+    """Mémorise un ancien nom du vendeur (fusion, renommage) : une opération qui arrive plus tard sous ce nom
+    est rattachée à ce vendeur au lieu de recréer l'ancien."""
+    key = name_alias(old_name)
+    if key is not None and key != name_alias(m.name) and key not in (m.aliases or []):
+        m.aliases = sorted({*(m.aliases or []), key})  # nouvelle liste : SQLAlchemy détecte le changement
+
+
 def merge_merchants(db: Session, src: Merchant, dst: Merchant) -> int:
-    """Fusionne src dans dst (opérations, alias, règle). src est supprimé."""
+    """Fusionne src dans dst (opérations, alias, règle). src est supprimé ; son nom reste reconnu comme dst."""
     moved = 0
     for t in db.scalars(select(Transaction).where(Transaction.merchant_id == src.id)):
         t.merchant_id = dst.id
@@ -162,6 +175,7 @@ def merge_merchants(db: Session, src: Merchant, dst: Merchant) -> int:
         if (t.details or {}).get("orig_merchant_id") == src.id:
             t.details = {**t.details, "orig_merchant_id": dst.id}
     dst.aliases = sorted(set((dst.aliases or []) + (src.aliases or [])))
+    remember_name(dst, src.name)
     dst.tags = list({t.id: t for t in [*dst.tags, *src.tags]}.values())
     for service in db.scalars(select(Rule).where(Rule.merchant_id == src.id)):
         service.merchant_id = dst.id
@@ -193,6 +207,8 @@ def rename_merchant(db: Session, m: Merchant, new_name: str) -> Merchant:
     rule = db.scalar(select(Rule).where(Rule.match_type == "marchand", Rule.pattern == m.name))
     if rule is not None:
         rule.pattern = new_name
+    old_name = m.name
     m.name = new_name
+    remember_name(m, old_name)
     db.flush()
     return m

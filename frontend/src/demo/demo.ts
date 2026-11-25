@@ -1,5 +1,7 @@
-/** Mode démo : quand le serveur est injoignable, l'appli affiche un jeu de données **fictif** (bandeau « données de
- *  test ») au lieu d'une erreur, et revient d'elle-même aux vraies données dès que le serveur répond.
+/** Mode démo : quand le serveur est injoignable (et que l'appli n'a pas de copie hors ligne de tes données, voir
+ *  offline/offline.ts), l'appli affiche un jeu de données **fictif** (bandeau « données de test ») au lieu d'une
+ *  erreur, et revient d'elle-même aux vraies données dès que le serveur répond. Le bouton 🧪 de l'accueil l'active aussi
+ *  à la main, à tout moment (mémorisé sur cet appareil).
  *
  *  Le jeu de données (public/demo/snapshot.json) est produit par le vrai serveur sur des comptes inventés :
  *  `python -m app.tools.demo_snapshot` (voir docs/demo.md). Sans ce fichier, rien ne change.
@@ -15,7 +17,7 @@ interface Snapshot {
   responses: Record<string, unknown>;
   transactions: DemoTx[];
 }
-interface DemoTx {
+export interface DemoTx {
   account_id: number;
   booked_at: string;
   category_id: number | null;
@@ -25,12 +27,36 @@ interface DemoTx {
   tags?: { id: number }[];
 }
 
+const FORCED_KEY = "wallet-demo-forced";
+function readForced(): boolean {
+  try {
+    return localStorage.getItem(FORCED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 let snapshot: Promise<Snapshot | null> | null = null;
 let active = false;
+const forced = DEMO_ENABLED && readForced();
 let since: string | null = null;
 const listeners = new Set<() => void>();
 
-export const demoActive = () => active;
+export const demoActive = () => active || forced;
+/** Données de test choisies à la main (bouton 🧪), et non parce que le serveur est injoignable. */
+export const demoForced = () => forced;
+/** Le jeu de test existe-t-il dans cette version de l'appli ? */
+export const demoAvailable = async () => DEMO_ENABLED && (await load()) !== null;
+/** Bascule à la main entre tes données et les données de test (l'appli se recharge). */
+export function setDemoForced(on: boolean) {
+  try {
+    if (on) localStorage.setItem(FORCED_KEY, "1");
+    else localStorage.removeItem(FORCED_KEY);
+  } catch {
+    /* stockage indisponible : rien à mémoriser */
+  }
+  window.location.reload();
+}
 export const demoGeneratedAt = () => since;
 export function onDemoChange(fn: () => void): () => void {
   listeners.add(fn);
@@ -64,6 +90,7 @@ function activate(s: Snapshot) {
   active = true;
   since = s.generated_at;
   listeners.forEach((fn) => fn());
+  if (forced) return; // choisi à la main : on reste sur le jeu de test
   // Dès que le serveur répond à nouveau : on recharge, les vraies données reprennent leur place.
   const timer = setInterval(async () => {
     if (await serverReachable()) {
@@ -74,7 +101,7 @@ function activate(s: Snapshot) {
 }
 
 /** Même clé que le générateur (backend/app/tools/demo_snapshot.py) : paramètres triés, vides ignorés. */
-function keyOf(method: string, path: string): string {
+export function keyOf(method: string, path: string): string {
   const [p, q = ""] = path.split("?");
   const params = [...new URLSearchParams(q).entries()].filter(([, v]) => v !== "").sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return `${method} ${p}${params.length ? "?" + params.map(([k, v]) => `${k}=${v}`).join("&") : ""}`;
@@ -82,14 +109,19 @@ function keyOf(method: string, path: string): string {
 
 /** Opérations filtrées comme le ferait le serveur (compte, catégorie et sous-catégories, vendeur, recherche, dates). */
 function transactions(s: Snapshot, query: string) {
-  const q = new URLSearchParams(query);
   const cats = (s.responses["GET /categories"] as { id: number; parent_id: number | null }[] | undefined) ?? [];
+  return filterTransactions(s.transactions, cats, query);
+}
+
+/** Filtre local d'une liste d'opérations (mode démo et mode hors ligne). Triées de la plus récente à la plus ancienne. */
+export function filterTransactions<T extends DemoTx>(all: T[], cats: { id: number; parent_id: number | null }[], query: string) {
+  const q = new URLSearchParams(query);
   const num = (k: string) => (q.get(k) ? Number(q.get(k)) : null);
   const account = num("account_id"), category = num("category_id"), merchant = num("merchant_id"), tag = num("tag_id");
   const family = category === null ? null : new Set([category, ...cats.filter((c) => c.parent_id === category).map((c) => c.id)]);
   const text = (q.get("q") ?? "").toLowerCase();
   const from = q.get("date_from"), to = q.get("date_to");
-  const items = s.transactions.filter(
+  const items = all.filter(
     (t) =>
       (account === null || t.account_id === account) &&
       (family === null || (t.category_id !== null && family.has(t.category_id))) &&
@@ -105,6 +137,20 @@ function transactions(s: Snapshot, query: string) {
   return { items: items.slice(offset, offset + limit), total: items.length };
 }
 
+/** Parmi des clés enregistrées, la plus proche de `key` (même adresse, le plus de réglages en commun), ou null. */
+export function closestKey(key: string, keys: Iterable<string>): string | null {
+  const base = key.split("?")[0];
+  const wanted = new Set(key.split("?")[1]?.split("&") ?? []);
+  let best: string | null = null, bestScore = -Infinity;
+  for (const k of keys) {
+    if (k.split("?")[0] !== base) continue;
+    const have = k.split("?")[1]?.split("&") ?? [];
+    const score = have.filter((x) => wanted.has(x)).length * 10 - have.filter((x) => !wanted.has(x)).length;
+    if (score > bestScore) [best, bestScore] = [k, score];
+  }
+  return best;
+}
+
 function answer(s: Snapshot, method: string, path: string): { data: unknown } | { error: string } {
   const [p, query = ""] = path.split("?");
   const readOnly = method === "GET" || (method === "POST" && (p === "/forecast" || p === "/projection"));
@@ -113,14 +159,7 @@ function answer(s: Snapshot, method: string, path: string): { data: unknown } | 
   const key = keyOf(method, path);
   if (key in s.responses) return { data: s.responses[key] };
   // Même adresse avec d'autres réglages (autre période, scénario…) : la réponse enregistrée la plus proche.
-  const wanted = new Set(key.split("?")[1]?.split("&") ?? []);
-  let best: string | null = null, bestScore = -1;
-  for (const k of Object.keys(s.responses)) {
-    if (k.split("?")[0] !== `${method} ${p}`) continue;
-    const have = k.split("?")[1]?.split("&") ?? [];
-    const score = have.filter((x) => wanted.has(x)).length * 10 - have.filter((x) => !wanted.has(x)).length;
-    if (score > bestScore) [best, bestScore] = [k, score];
-  }
+  const best = closestKey(key, Object.keys(s.responses));
   if (best) return { data: s.responses[best] };
   return { error: "Pas disponible en mode démo (serveur injoignable)." };
 }
@@ -130,8 +169,8 @@ function answer(s: Snapshot, method: string, path: string): { data: unknown } | 
 export async function demoAnswer(method: string, path: string, confirmOffline: boolean): Promise<{ data: unknown } | { error: string } | null> {
   if (!DEMO_ENABLED) return null;
   const s = await load();
-  if (!s) return null;
-  if (!active && confirmOffline && (await serverReachable())) return null;
+  if (!s) return forced ? { error: "Jeu de test absent de cette version de l'appli." } : null;
+  if (!active && !forced && confirmOffline && (await serverReachable())) return null;
   activate(s);
   return answer(s, method, path);
 }

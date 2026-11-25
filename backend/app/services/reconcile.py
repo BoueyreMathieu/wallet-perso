@@ -12,19 +12,24 @@ Après rapprochement :
 Avec la synchro Enable Banking, PayPal ne fournit que les achats (pas les approvisionnements) :
 le prélèvement bancaire −X est alors rapproché directement de l'achat PayPal −X (dates proches).
 En cas de doute (plusieurs candidats aussi proches), on ne devine pas : rien n'est rapproché.
+Quand le solde PayPal complète le paiement, le prélèvement bancaire est plus petit que l'achat : ils sont quand
+même rapprochés (voir app/pairing.py). La dépense, pour son montant complet, est alors comptée sur l'achat PayPal ;
+la ligne bancaire garde le vendeur et la catégorie mais n'est pas comptée (sinon double comptage).
 """
 
-from datetime import timedelta
+from datetime import date, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import Account, Transaction
+from app.pairing import Cand, partial_pairs
 from app.services.categorizing import Categorizer
 
 DAYS_BEFORE = 7  # l'approvisionnement PayPal peut précéder le prélèvement bancaire de quelques jours
 DAYS_AFTER = 2
-LINK_KEYS = ("via", "vendeur", "objet", "paypal_transaction", "match_text", "orig_merchant_id")
+PARTIAL_GRACE_DAYS = 2  # un rapprochement partiel attend que l'achat exact ait eu le temps d'arriver (synchro PayPal décalée)
+LINK_KEYS = ("via", "vendeur", "objet", "paypal_transaction", "match_text", "orig_merchant_id", "partiel", "solde_paypal_cents")
 
 
 def _is_paypal_debit(t: Transaction) -> bool:
@@ -52,7 +57,14 @@ def link(bank: Transaction, funding: Transaction | None, purchase: Transaction |
         )
         if purchase.merchant is not None:
             bank.merchant = purchase.merchant
-        purchase.counted = False
+        extra = bank.amount_cents - purchase.amount_cents  # > 0 : l'achat est plus gros que le prélèvement
+        if extra > 0 and bank.counted:
+            # Payé en partie avec le solde PayPal : la dépense complète est sur l'achat PayPal.
+            info["partiel"] = True
+            info["solde_paypal_cents"] = extra
+            bank.counted = False
+        else:
+            purchase.counted = False
     bank.details = {**(bank.details or {}), **{k: v for k, v in info.items() if v is not None}}
 
 
@@ -60,7 +72,7 @@ def sync_category(src: Transaction, dst: Transaction) -> None:
     dst.category_id, dst.is_transfer, dst.category_locked = src.category_id, src.is_transfer, src.category_locked
 
 
-def reconcile_paypal(db: Session) -> int:
+def reconcile_paypal(db: Session, today: date | None = None) -> int:
     """Rapproche les prélèvements PayPal bancaires non encore liés. Renvoie le nombre de rapprochements."""
     load = select(Transaction).options(selectinload(Transaction.merchant)).join(Account, Transaction.account_id == Account.id)
     paypal_rows = db.scalars(load.where(Account.type == "paypal")).all()
@@ -128,6 +140,22 @@ def reconcile_paypal(db: Session) -> int:
         used.add(purchase.id)
         linked.extend([by_id[bid], purchase])
 
+    # 3e passe : prélèvement plus petit que l'achat (le solde PayPal a complété). Seulement quand l'achat exact
+    # n'est pas venu depuis PARTIAL_GRACE_DAYS jours, et sans ambiguïté.
+    today = today or date.today()
+    done = {t.id for t in linked}
+    rest = [b for b in bank_rows if b.id not in done and b.counted and (today - b.booked_at).days >= PARTIAL_GRACE_DAYS]
+    free_purchases = {p.id: p for p in direct if p.id not in done}
+    if rest and free_purchases:
+        pairs = partial_pairs(
+            [Cand(b.id, b.booked_at, b.amount_cents) for b in rest],
+            [Cand(p.id, p.booked_at, p.amount_cents) for p in free_purchases.values()],
+            DAYS_BEFORE, DAYS_AFTER,
+        )
+        for bid, pid in pairs:
+            link(by_id[bid], None, free_purchases[pid])
+            linked.extend([by_id[bid], free_purchases[pid]])
+
     if linked:
         db.flush()
         Categorizer(db).apply(linked)
@@ -157,6 +185,8 @@ def unlink(db: Session, t: Transaction) -> None:
     funding = db.get(Transaction, bank.transfer_pair_id) if bank.transfer_pair_id else None
     details = dict(bank.details or {})
     bank.merchant_id = details.get("orig_merchant_id", bank.merchant_id)
+    if details.get("partiel"):
+        bank.counted = True  # la ligne bancaire redevient la dépense comptée
     for k in LINK_KEYS:
         details.pop(k, None)
     details["no_link"] = True  # ne pas re-rapprocher automatiquement

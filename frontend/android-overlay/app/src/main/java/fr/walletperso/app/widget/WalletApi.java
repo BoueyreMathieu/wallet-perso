@@ -12,25 +12,31 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.util.Calendar;
 import java.util.Date;
 import java.util.Locale;
 
+import fr.walletperso.app.SecureStore;
+
 /**
  * Appel du serveur Wallet pour les widgets (adresse + jeton enregistrés par l'appli à la connexion).
- * Un seul appel sert tous les widgets : le résumé est gardé en cache, et réutilisé tel quel pendant une minute
+ * Un seul appel sert tous les widgets : le résumé est gardé, et réutilisé tel quel pendant une minute
  * (sauf ↻), pour que l'actualisation de 8 widgets ne fasse qu'un aller-retour vers le serveur.
+ * Hors ligne, les widgets affichent ce dernier résumé avec sa date. Il est gardé chiffré (SecureStore) et effacé
+ * à la déconnexion.
  */
 final class WalletApi {
     /** Fichier des « Preferences » Capacitor (écrit par l'appli : server_url, device_token). */
     private static final String CAPACITOR_PREFS = "CapacitorStorage";
-    /** Dernier résumé reçu (+ réglages des widgets, ex. compte choisi). */
+    /** Réglages des widgets (ex. compte choisi) et date du dernier résumé. */
     static final String PREFS = "WalletWidgets";
+    private static final String SUMMARY = "widgets_summary";
     private static final long FRESH_MS = 60_000;
     private static final Object LOCK = new Object();
 
     private WalletApi() {}
 
-    /** Résultat d'un chargement : données (éventuellement en cache) et ligne d'état à afficher. */
+    /** Résultat d'un chargement : données (éventuellement gardées) et ligne d'état à afficher. */
     static final class Result {
         final JSONObject data;
         final String status;
@@ -43,35 +49,47 @@ final class WalletApi {
         }
     }
 
-    /** Résumé à jour (ou en cache s'il date de moins d'une minute et que force est faux). Jamais d'exception. */
+    /** Résumé à jour (ou gardé s'il date de moins d'une minute et que force est faux). Jamais d'exception. */
     static Result load(Context ctx, boolean force) {
         synchronized (LOCK) {
-            SharedPreferences cache = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-            long at = cache.getLong("summary_at", 0);
-            JSONObject cached = parse(cache.getString("summary", null));
+            SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            long at = prefs.getLong("summary_at", 0);
+            JSONObject cached = cached(ctx);
             if (!force && cached != null && System.currentTimeMillis() - at < FRESH_MS) {
-                return new Result(cached, "Mis à jour à " + hour(at), true);
+                return new Result(cached, "Mis à jour " + when(at, "à "), true);
             }
             try {
                 String raw = fetch(ctx);
                 JSONObject json = new JSONObject(raw);
                 long now = System.currentTimeMillis();
-                cache.edit().putString("summary", raw).putLong("summary_at", now).apply();
-                return new Result(json, "Mis à jour à " + hour(now), true);
+                SecureStore.put(ctx, SUMMARY, raw);
+                prefs.edit().putLong("summary_at", now).apply();
+                return new Result(json, "Mis à jour " + when(now, "à "), true);
             } catch (Exception e) {
                 String msg;
-                if (e instanceof IOException && !(e instanceof HttpError)) msg = "Serveur injoignable (Tailscale ?)";
+                if (e instanceof IOException && !(e instanceof HttpError)) msg = "Hors ligne";
                 else if (e instanceof org.json.JSONException) msg = "Réponse inattendue du serveur";
                 else msg = e.getMessage() != null && !e.getMessage().isEmpty() ? e.getMessage() : "Serveur injoignable";
-                if (cached != null) msg += " · données de " + hour(at);
+                if (cached != null) msg += " · données " + when(at, "de ");
                 return new Result(cached, msg, false);
             }
         }
     }
 
-    /** Dernier résumé connu, sans appel réseau. */
+    /** Dernier résumé connu, sans appel réseau (null après une déconnexion). */
     static JSONObject cached(Context ctx) {
-        return parse(ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("summary", null));
+        SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        if (prefs.contains("summary")) {
+            // Ancienne version : résumé gardé en clair → déplacé dans la copie chiffrée.
+            String old = prefs.getString("summary", null);
+            try {
+                if (old != null) SecureStore.put(ctx, SUMMARY, old);
+            } catch (Exception ignored) {
+                // tant pis : il sera rechargé au prochain appel
+            }
+            prefs.edit().remove("summary").apply();
+        }
+        return parse(SecureStore.get(ctx, SUMMARY));
     }
 
     private static final class HttpError extends IOException {
@@ -116,7 +134,13 @@ final class WalletApi {
         }
     }
 
-    private static String hour(long millis) {
-        return new SimpleDateFormat("HH:mm", Locale.FRANCE).format(new Date(millis));
+    /** Aujourd'hui : « à 14:05 » (ou « de 14:05 »), sinon « du 24/11 à 14:05 ». */
+    private static String when(long millis, String todayPrefix) {
+        Calendar then = Calendar.getInstance();
+        then.setTimeInMillis(millis);
+        Calendar now = Calendar.getInstance();
+        boolean today = then.get(Calendar.YEAR) == now.get(Calendar.YEAR) && then.get(Calendar.DAY_OF_YEAR) == now.get(Calendar.DAY_OF_YEAR);
+        String hour = new SimpleDateFormat("HH:mm", Locale.FRANCE).format(new Date(millis));
+        return today ? todayPrefix + hour : "du " + new SimpleDateFormat("dd/MM", Locale.FRANCE).format(new Date(millis)) + " à " + hour;
     }
 }

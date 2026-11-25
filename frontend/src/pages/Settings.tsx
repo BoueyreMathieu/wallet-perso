@@ -5,14 +5,17 @@ import { ThemeSwitch } from "../components/ThemeSwitch";
 import Connections from "./Connections";
 import Data from "./Data";
 import Import from "./Import";
+import Notifications from "./Notifications";
 import Security from "./Security";
 
 const TABS = [
   { to: "connexions", label: "Connexions", icon: "🔗" },
+  { to: "notifications", label: "Notifications", icon: "🔔" },
   { to: "importer", label: "Importer", icon: "📥" },
   { to: "donnees", label: "Données", icon: "🧰" },
   { to: "securite", label: "Sécurité", icon: "🔒" },
   { to: "preferences", label: "Préférences", icon: "🎨" },
+  { to: "categories", label: "Catégories", icon: "🗂️", phone: true },
 ];
 
 export default function Settings({ onLogout }: { onLogout: () => void }) {
@@ -20,7 +23,7 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Paramètres</h1>
       <nav className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1">
-        {TABS.map((t) => (
+        {TABS.filter((t) => !("phone" in t) || window.innerWidth < 640).map((t) => (
           <NavLink
             key={t.to}
             to={`/parametres/${t.to}`}
@@ -35,6 +38,7 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
       <Routes>
         <Route path="categories" element={<Navigate to="/categories" replace />} />
         <Route path="connexions" element={<Connections />} />
+        <Route path="notifications" element={<Notifications />} />
         <Route path="importer" element={<Import />} />
         <Route path="donnees" element={<Data />} />
         <Route path="securite" element={<Security />} />

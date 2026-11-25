@@ -24,6 +24,7 @@ import { BudgetBar, LEVELS, shortDate } from "../components/planning";
 import { AdvicePage } from "../components/advice";
 import { GoalsPage, useGoals } from "../components/goals";
 import { PaydaySetting, RecurringCalendar } from "../components/recurringCalendar";
+import { ContractForm, ContractsPage, ProjectsPage } from "../components/projects";
 import { formatCents, isoDate, parseEuros } from "../format";
 
 const TABS = [
@@ -31,6 +32,8 @@ const TABS = [
   { to: "projection", label: "Projection", icon: "📈" },
   { to: "budgets", label: "Budgets", icon: "🎯" },
   { to: "recurrents", label: "Récurrents", icon: "🔁" },
+  { to: "projets", label: "Projets", icon: "🧳" },
+  { to: "contrats", label: "Contrats", icon: "📄" },
   { to: "objectifs", label: "Objectifs", icon: "🏁" },
   { to: "conseils", label: "Conseils", icon: "💡" },
 ];
@@ -83,6 +86,8 @@ export default function Planning() {
         <Route path="recurrents" element={<RecurringPage />} />
         <Route path="conseils" element={<AdvicePage />} />
         <Route path="objectifs" element={<GoalsPage />} />
+        <Route path="projets" element={<ProjectsPage />} />
+        <Route path="contrats" element={<ContractsPage />} />
         <Route path="*" element={<Navigate to="/prevoir/tresorerie" replace />} />
       </Routes>
     </div>
@@ -809,7 +814,7 @@ function ProjectionPage({ sc, setSc }: { sc: ScenarioState; setSc: (s: ScenarioS
           <section className="card space-y-3">
             <ChartFrame
               title="Entrées et sorties prévues, mois par mois"
-              help="Barres : ce qui sort (le mois en cours, plus pâle, ne compte que ce qui reste à venir). Trait : les revenus attendus."
+              help="Barres : ce qui sort. Le mois en cours (un peu plus pâle) additionne ce qui est déjà passé et ce qui reste à venir. Trait : les revenus attendus."
               controls={
                 <Legend
                   items={[
@@ -910,8 +915,8 @@ function ProjectionPage({ sc, setSc }: { sc: ScenarioState; setSc: (s: ScenarioS
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-white/5">
                 {p.months.map((m) => (
-                  <tr key={m.month} className={m.partial ? "muted" : ""}>
-                    <td className="py-1.5 text-left">{monthLabel(m.month)}{m.partial ? " (reste)" : ""}</td>
+                  <tr key={m.month}>
+                    <td className="py-1.5 text-left">{monthLabel(m.month)}{m.partial ? <span className="muted"> (en cours)</span> : ""}</td>
                     <td className="text-emerald-700 dark:text-emerald-400">{formatCents(m.income_cents)}</td>
                     <td>{formatCents(-m.fixe_cents)}</td>
                     <td>{formatCents(-m.essentiel_cents)}</td>
@@ -1040,12 +1045,12 @@ function Budgets() {
         <h2 className="section-title">Nouveau budget</h2>
         <form className="flex flex-wrap items-end gap-2" onSubmit={add}>
           <div className="min-w-[14rem] flex-1">
-            <CategorySelect value={newCat} onChange={setNewCat} emptyLabel="— Catégorie de dépenses —" exclude={[...nonExpense, ...budgeted]} />
+            <CategorySelect value={newCat} onChange={setNewCat} emptyLabel="— Catégorie de dépenses —" exclude={[...nonExpense, ...budgeted]} keepChildren />
           </div>
           <input className="input w-32" inputMode="decimal" placeholder="€ / mois" value={newAmount} onChange={(e) => setNewAmount(e.target.value)} />
           <button className="btn" type="submit">Ajouter</button>
         </form>
-        <p className="muted text-xs">Un budget sur une catégorie principale compte aussi ses sous-catégories. Alerte à 80 % (réglable).</p>
+        <p className="muted text-xs">Un budget sur une catégorie principale compte aussi ses sous-catégories. Tu peux en plus fixer un budget à part sur une sous-catégorie (ex. « Livraison » dans « Alimentation ») : elle compte dans les deux. Alerte à 80 % (réglable).</p>
         {msg && <p className="text-sm text-red-600">{msg}</p>}
       </section>
 
@@ -1125,6 +1130,24 @@ function GlobalBudget({ b, onChanged }: { b: BudgetsOverview; onChanged: () => v
   );
 }
 
+/** Part de chaque sous-catégorie dans le budget d'une catégorie principale (ce mois-ci). */
+function BudgetChildren({ item }: { item: BudgetItem }) {
+  const { byId } = useCategories();
+  const total = Math.max(item.spent_cents, 1);
+  return (
+    <ul className="flex flex-wrap gap-1.5 text-xs">
+      {(item.children ?? []).map((c) => (
+        <li key={c.category_id} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 dark:bg-white/5">
+          <CategoryIcon id={c.category_id} size="sm" />
+          <span>{c.category_id === item.category_id ? "Général" : byId.get(c.category_id)?.name ?? "?"}</span>
+          <b className="tabular-nums">{formatCents(c.spent_cents)}</b>
+          <span className="muted tabular-nums">{Math.round((c.spent_cents / total) * 100)} %</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function BudgetRow({
   item,
   label,
@@ -1165,6 +1188,7 @@ function BudgetRow({
           </span>
         </div>
         <BudgetBar item={item} showPace={current} />
+        {item.children && item.children.length > 0 && <BudgetChildren item={item} />}
         <p className="muted text-xs">
           {item.remaining_cents >= 0 ? `Reste ${formatCents(item.remaining_cents)}` : `Dépassé de ${formatCents(-item.remaining_cents)}`}
           {current && ` · fin de mois ≈ ${formatCents(item.projected_cents)}`}
@@ -1385,6 +1409,8 @@ function RecurringDetail({
   const [next, setNext] = useState(r.next_date ?? "");
   const [cat, setCat] = useState<number | null>(r.category_id);
   const [end, setEnd] = useState(r.end_date ?? "");
+  const [contract, setContract] = useState(false);
+  const [saved, setSaved] = useState<string | null>(null);
   useEffect(() => {
     api.get<typeof txs>(`/recurring/${r.id}/transactions`).then(setTxs);
   }, [r.id]);
@@ -1421,9 +1447,17 @@ function RecurringDetail({
       </div>
       <div className="flex flex-wrap gap-2">
         <button className="btn" onClick={save}>Enregistrer</button>
+        {r.amount_cents < 0 && <button className="btn-ghost" onClick={() => setContract(!contract)}>📄 Infos du contrat</button>}
         {r.status !== "termine" && <button className="btn-ghost" onClick={() => onPatch(r, { status: "termine" })}>Résilié / terminé</button>}
         <button className="btn-ghost text-red-600" onClick={() => onRemove(r)}>{r.source === "manuel" ? "Supprimer" : "Pas récurrent"}</button>
       </div>
+      {contract && (
+        <div className="space-y-2 rounded-xl border border-slate-200 p-2 dark:border-white/10">
+          <p className="muted text-xs">Échéance et préavis : l'appli te prévient avant la date limite pour résilier (liste complète dans Prévoir › Contrats).</p>
+          <ContractForm recurring={r} onSaved={() => { setContract(false); setSaved("Contrat enregistré : voir Prévoir › Contrats."); }} />
+        </div>
+      )}
+      {saved && <p className="text-xs text-emerald-700 dark:text-emerald-400">✓ {saved}</p>}
       {txs.length > 0 && (
         <ul className="muted space-y-0.5 text-xs">
           {txs.slice(0, 12).map((t) => (
